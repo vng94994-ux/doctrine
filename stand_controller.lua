@@ -17,4 +17,4 @@ getgenv().Guns = {
 }
 
 -- Load external core logic
-loadstring(game:HttpGet("CORE_URL_HERE"))()
+loadstring(game:HttpGet("https://raw.githubusercontent.com/vng94994-ux/doctrine/refs/heads/main/stand_core.lua"))()

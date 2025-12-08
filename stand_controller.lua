@@ -10,8 +10,19 @@ local StandConfig = getgenv().StandConfig or {
     FPSCap = 60,
 
     AllowedGuns = {
-        "Tommy Gun",
-        "Luger",
+        Revolver = CFrame.new(-638.75, 18.8500004, -118.175011, -1, 0, 0, 0, 1, 0, 0, 0, -1),
+        AK = CFrame.new(-587.529358, 5.39480686, -753.717712, -1, 0, 0, 0, 1, 0, 0, 0, -1),
+        SMG = CFrame.new(-577.123413, 5.47666788, -718.031433, -1, 0, 0, 0, 1, 0, 0, 0, -1),
+        AR = CFrame.new(-591.824158, 5.46046877, -744.731628, 0, 0, 1, 0, 1, 0, -1, 0, 0),
+        DoubleBarrel = CFrame.new(-1039.59985, 18.8513641, -256.449951, -1, 0, 0, 0, 1, 0, 0, 0, -1),
+        Shotgun = CFrame.new(-578.623657, 5.47212696, -725.131531, 0, 0, 1, 0, 1, 0, -1, 0, 0),
+        Flamethrower = CFrame.new(-157.122437, 50.9120102, -104.93145),
+        TacticalShotgun = CFrame.new(470.877533, 45.1272316, -620.630676),
+        RPG = CFrame.new(118.664856, -29.6487694, -272.349792),
+        DrumGun = CFrame.new(-83.548996, 19.7020588, -82.1449585),
+        Bat = CFrame.new(380, 49, -283),
+        MediumArmor = CFrame.new(528, 50, -637),
+        HighMediumArmor = CFrame.new(-939, -25, 571),
     },
 
     Whitelist = {},
@@ -48,6 +59,7 @@ function StandController.new(config)
     local self = setmetatable({}, StandController)
     self.config = config
     self.whitelist = {}
+    self.autoStomp = false
 
     for _, user in ipairs(config.Whitelist or {}) do
         self.whitelist[user:lower()] = true
@@ -100,6 +112,31 @@ end
 
 function StandController:announce(text)
     print("[Stand] " .. text)
+end
+
+function StandController:startAutoStomp()
+    if self.autoStomp then return end
+    self.autoStomp = true
+
+    game:GetService("RunService"):BindToRenderStep(
+        "MoonStand-AutoStomp",
+        0,
+        function()
+            game:GetService("ReplicatedStorage")
+                :WaitForChild("MainEvent")
+                :FireServer("Stomp")
+        end
+    )
+
+    self:announce("Auto Stomp enabled")
+end
+
+function StandController:stopAutoStomp()
+    if not self.autoStomp then return end
+    self.autoStomp = false
+
+    game:GetService("RunService"):UnbindFromRenderStep("MoonStand-AutoStomp")
+    self:announce("Auto Stomp disabled")
 end
 
 -- ==============================
@@ -238,6 +275,37 @@ local function unwhitelistHandler(self, args)
     end
 end
 
+local function autoStompHandler(self, args)
+    local state = args[1] and args[1]:lower()
+
+    if state == "on" then
+        self:startAutoStomp()
+    elseif state == "off" then
+        self:stopAutoStomp()
+    else
+        warnf("Usage: .stomp on|off")
+    end
+end
+
+local function gunHandler(self, args)
+    local gunName = table.concat(args, "")
+    if gunName == "" then
+        return warnf("Usage: .gun <name>")
+    end
+
+    local cf = self.config.AllowedGuns[gunName]
+    if not cf then
+        return warnf("Unknown gun: " .. gunName)
+    end
+
+    local lp = game.Players.LocalPlayer
+    local char = lp.Character
+    if char and char:FindFirstChild("HumanoidRootPart") then
+        char.HumanoidRootPart.CFrame = cf
+        self:announce("Teleported to " .. gunName)
+    end
+end
+
 function StandController:initCommands()
     -- Commands are resolved through this table.
     -- Only the Owner or whitelisted users may invoke them.
@@ -277,6 +345,11 @@ function StandController:initCommands()
         -- Whitelist Management
         wl = whitelistHandler,
         unwl = unwhitelistHandler,
+
+        -- Automation
+        stomp = autoStompHandler,
+        autostomp = autoStompHandler,
+        gun = gunHandler,
     }
 end
 

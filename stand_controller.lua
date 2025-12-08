@@ -64,6 +64,9 @@ function StandController.new(config)
     self.ownerChatConnection = nil
     self.ownerJoinConnection = nil
     self.isInvisible = false
+    self.silentAimEnabled = false
+    self.silentAimConnection = nil
+    self.silentAimTarget = nil
 
     for _, user in ipairs(config.Whitelist or {}) do
         self.whitelist[user:lower()] = true
@@ -105,6 +108,21 @@ local function ensureEquippedTool(humanoid, player)
     end
 
     return nil
+end
+
+local function getRoot(character)
+    return character and character:FindFirstChild("HumanoidRootPart")
+end
+
+local function isKnocked(targetCharacter)
+    if not targetCharacter then
+        return false
+    end
+
+    local bodyEffects = targetCharacter:FindFirstChild("BodyEffects")
+    local koFlag = bodyEffects and bodyEffects:FindFirstChild("K.O")
+
+    return koFlag and koFlag.Value == true
 end
 
 local function findTargetPlayer(args)
@@ -159,6 +177,64 @@ local function activateTool(tool)
         pcall(function()
             tool:Activate()
         end)
+    end
+end
+
+function StandController:startSilentAim(target)
+    if not self.silentAimEnabled or not target then
+        return
+    end
+
+    if self.silentAimConnection then
+        self.silentAimConnection:Disconnect()
+        self.silentAimConnection = nil
+    end
+
+    self.silentAimTarget = target
+
+    local runService = game:GetService("RunService")
+    self.silentAimConnection = runService.RenderStepped:Connect(function()
+        local _, char = getLocalCharacter()
+        local root = getRoot(char)
+        local targetRoot = target.Character and getRoot(target.Character)
+        local camera = workspace.CurrentCamera
+
+        if not root or not targetRoot then
+            self:stopSilentAim()
+            return
+        end
+
+        root.CFrame = CFrame.lookAt(root.Position, targetRoot.Position)
+        if camera then
+            camera.CFrame = CFrame.new(camera.CFrame.Position, targetRoot.Position)
+        end
+    end)
+end
+
+function StandController:stopSilentAim()
+    if self.silentAimConnection then
+        self.silentAimConnection:Disconnect()
+        self.silentAimConnection = nil
+    end
+
+    self.silentAimTarget = nil
+end
+
+function StandController:dance()
+    local _, char = getLocalCharacter()
+    local humanoid = getHumanoid(char)
+
+    if not humanoid then
+        return
+    end
+
+    local dance = Instance.new("Animation")
+    dance.AnimationId = "rbxassetid://3189773368"
+
+    local track = humanoid:LoadAnimation(dance)
+    if track then
+        track.Looped = false
+        track:Play()
     end
 end
 
@@ -232,11 +308,14 @@ StandController.actions = {
         end
     end,
 
-    block = function(_)
-        local _, char = getLocalCharacter()
-        local humanoid = getHumanoid(char)
-        if humanoid then
-            humanoid.WalkSpeed = math.max(4, humanoid.WalkSpeed - 8)
+    bring = function(ctx)
+        local target = findTargetPlayer(ctx.args)
+        local player, char = getLocalCharacter()
+        local localRoot = getRoot(char)
+        local targetRoot = target and target.Character and getRoot(target.Character)
+
+        if targetRoot and localRoot then
+            targetRoot.CFrame = localRoot.CFrame * CFrame.new(0, 0, -3)
         end
     end,
 
@@ -254,30 +333,45 @@ StandController.actions = {
     autoKill = function(ctx)
         local controller = ctx.controller
         local target = controller.lockedTarget or findTargetPlayer(ctx.args)
-        local player, char = getLocalCharacter()
-        local humanoid = getHumanoid(char)
-        local tool = ensureEquippedTool(humanoid, player)
-
-        if not (target and target.Character) then
+        if not target or not target.Character then
+            warnf("No valid target for akill")
             return
         end
 
+        local player, char = getLocalCharacter()
+        local humanoid = getHumanoid(char)
+        local tool = ensureEquippedTool(humanoid, player)
         local targetHumanoid = getHumanoid(target.Character)
-        local targetRoot = target.Character:FindFirstChild("HumanoidRootPart")
+        local targetRoot = getRoot(target.Character)
 
-        for _ = 1, 20 do
-            if not targetHumanoid or targetHumanoid.Health <= 0 then
-                break
-            end
+        if not (humanoid and tool and targetHumanoid and targetRoot) then
+            warnf("Unable to engage akill")
+            return
+        end
 
+        controller:startSilentAim(target)
+
+        local iterations = 0
+        while iterations < 150 and targetHumanoid.Health > 0 and not isKnocked(target.Character) do
             moveTowardTarget(humanoid, targetRoot)
             activateTool(tool)
-            task.wait(0.1)
+            task.wait(0.08)
+            iterations += 1
+        end
+
+        controller:stopSilentAim()
+
+        if isKnocked(target.Character) then
+            pcall(function()
+                game:GetService("ReplicatedStorage"):WaitForChild("MainEvent"):FireServer("Stomp")
+            end)
+            controller:dance()
         end
     end,
 
     knock = function(ctx)
-        local target = findTargetPlayer(ctx.args)
+        local controller = ctx.controller
+        local target = controller.lockedTarget or findTargetPlayer(ctx.args)
         if not target or not target.Character then
             warnf("No valid target to knock")
             return
@@ -287,22 +381,24 @@ StandController.actions = {
         local humanoid = getHumanoid(char)
         local tool = ensureEquippedTool(humanoid, player)
         local targetHumanoid = getHumanoid(target.Character)
-        local targetRoot = target.Character:FindFirstChild("HumanoidRootPart")
+        local targetRoot = getRoot(target.Character)
 
-        if not targetRoot then
-            warnf("Target has no root part")
+        if not (humanoid and tool and targetHumanoid and targetRoot) then
+            warnf("Unable to knock target")
             return
         end
 
-        for _ = 1, 25 do
-            if not targetHumanoid or targetHumanoid.Health <= 0 then
-                break
-            end
+        controller:startSilentAim(target)
 
+        local iterations = 0
+        while iterations < 150 and targetHumanoid.Health > 0 and not isKnocked(target.Character) do
             moveTowardTarget(humanoid, targetRoot)
             activateTool(tool)
-            task.wait(0.05)
+            task.wait(0.08)
+            iterations += 1
         end
+
+        controller:stopSilentAim()
     end,
 
     sky = function(_)
@@ -593,15 +689,16 @@ local function knockHandler(self, args)
     self:announce("Knock attempt started")
 end
 
-local function blockHandler(self)
-    if StandController.actions.block then
-        StandController.actions.block({
+local function bringHandler(self, args)
+    if StandController.actions.bring then
+        StandController.actions.bring({
             player = game.Players.LocalPlayer,
             controller = self,
+            args = args,
         })
     end
 
-    self:announce("Block raised")
+    self:announce("Bring executed")
 end
 
 local function lightAttackHandler(self)
@@ -840,6 +937,21 @@ local function gunHandler(self, args)
     end
 end
 
+local function silentAimHandler(self, args)
+    local state = args[1] and args[1]:lower()
+
+    if state == "on" then
+        self.silentAimEnabled = true
+        self:announce("Silent aim enabled")
+    elseif state == "off" then
+        self.silentAimEnabled = false
+        self:stopSilentAim()
+        self:announce("Silent aim disabled")
+    else
+        warnf("Usage: .silent on|off")
+    end
+end
+
 function StandController:initCommands()
     -- Commands are resolved through this table.
     -- Only the Owner or whitelisted users may invoke them.
@@ -857,7 +969,7 @@ function StandController:initCommands()
 
         -- Movement / Combat
         d = knockHandler,
-        b = blockHandler,
+        b = bringHandler,
         l = lightAttackHandler,
         lk = lockTargetHandler,
         akill = autoKillHandler,
@@ -884,6 +996,7 @@ function StandController:initCommands()
         stomp = autoStompHandler,
         autostomp = autoStompHandler,
         gun = gunHandler,
+        silent = silentAimHandler,
     }
 end
 

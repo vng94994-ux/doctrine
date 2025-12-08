@@ -1,1008 +1,908 @@
--- MoonStand-style stand controller core
--- ==============================
--- This file expects a loader to define globals via getgenv():
--- Script, Owner, DisableRendering, BlackScreen, FPSCap, and Guns (list of names).
--- Configuration must not be redefined here; we only read from getgenv().
+-- MoonStand core (loader seeds globals; logic resides here)
+-- Reads configuration exclusively from getgenv().
 
 local env = getgenv()
 local COMMAND_PREFIX = "."
+
+local StandController = {}
+StandController.__index = StandController
 
 local function warnf(msg)
     warn("[Stand] " .. msg)
 end
 
--- ==============================
--- Stand Controller
--- ==============================
-local StandController = {}
-StandController.__index = StandController
-StandController.actions = {}
+local function players()
+    return game:GetService("Players")
+end
 
-function StandController.new(config)
+local function runService()
+    return game:GetService("RunService")
+end
+
+local function replicatedStorage()
+    return game:GetService("ReplicatedStorage")
+end
+
+local function tweenService()
+    return game:GetService("TweenService")
+end
+
+local function getLocalPlayer()
+    return players().LocalPlayer
+end
+
+local function getCharacter(plr)
+    return plr and plr.Character
+end
+
+local function getHumanoid(char)
+    return char and char:FindFirstChildOfClass("Humanoid")
+end
+
+local function getRoot(char)
+    return char and char:FindFirstChild("HumanoidRootPart")
+end
+
+local function getHead(char)
+    return char and char:FindFirstChild("Head")
+end
+
+local function stringLower(str)
+    return type(str) == "string" and str:lower() or str
+end
+
+local function findPlayerByFragment(fragment)
+    if not fragment or fragment == "" then
+        return nil
+    end
+
+    fragment = fragment:lower()
+    local lp = getLocalPlayer()
+    for _, plr in ipairs(players():GetPlayers()) do
+        if plr ~= lp and plr.Name:lower():find(fragment, 1, true) then
+            return plr
+        end
+    end
+
+    return nil
+end
+
+function StandController.new()
     local self = setmetatable({}, StandController)
-    self.config = config or env
-    self.whitelist = {}
-    self.autoStomp = false
-    self.ownerChatConnection = nil
-    self.ownerJoinConnection = nil
-    self.isInvisible = false
-    self.silentAimEnabled = false
-    self.silentAimConnection = nil
-    self.silentAimTarget = nil
-    self.allowedGuns = {}
 
+    self.owner = env.Owner
+    self.allowedGuns = {}
     for _, name in ipairs(env.Guns or {}) do
         if type(name) == "string" then
             self.allowedGuns[name:lower()] = true
         end
     end
 
-    for _, user in ipairs((config and config.Whitelist) or {}) do
-        self.whitelist[user:lower()] = true
-    end
+    self.state = {
+        followOwner = false,
+        stay = false,
+        voided = true,
+        aura = false,
+        akill = false,
+        auraWhitelist = {},
+        whitelist = {},
+        sentry = false,
+        bsentry = false,
+        fp = false,
+        mask = false,
+        loopkillTarget = nil,
+        loopknockTarget = nil,
+        assistTargets = {},
+        lastTarget = nil,
+        targetForBring = nil,
+        targetForStomp = nil,
+        targetForSky = nil,
+        targetForFling = nil,
+        silentAim = true,
+        idleJitterClock = 0,
+    }
+
+    self.connections = {}
+    self.voidBase = CFrame.new(0, 6000, 0)
+    self.mainEvent = replicatedStorage():FindFirstChild("MainEvent")
+    self.danceAnimationId = "rbxassetid://3189773368"
+
+    self.actions = {}
 
     return self
 end
 
-local function getHumanoid(character)
-    if not character then
-        return nil
-    end
-
-    return character:FindFirstChildOfClass("Humanoid")
+function StandController:announce(text)
+    print(("[Stand] %s"):format(text))
 end
-
-local function getLocalCharacter()
-    local lp = game:GetService("Players").LocalPlayer
-    return lp, lp and lp.Character
-end
-
-local function ensureEquippedTool(humanoid, player)
-    if not humanoid or not player then
-        return nil
-    end
-
-    local tool = humanoid:FindFirstChildOfClass("Tool")
-    if tool then
-        return tool
-    end
-
-    local backpack = player:FindFirstChild("Backpack")
-    if backpack then
-        tool = backpack:FindFirstChildOfClass("Tool")
-        if tool then
-            humanoid:EquipTool(tool)
-            return tool
-        end
-    end
-
-    return nil
-end
-
-local function findToolByName(container, nameLower)
-    if not (container and nameLower) then
-        return nil
-    end
-
-    for _, child in ipairs(container:GetChildren()) do
-        if child:IsA("Tool") and child.Name:lower() == nameLower then
-            return child
-        end
-    end
-
-    return nil
-end
-
-local function getRoot(character)
-    return character and character:FindFirstChild("HumanoidRootPart")
-end
-
-local function isKnocked(targetCharacter)
-    if not targetCharacter then
-        return false
-    end
-
-    local bodyEffects = targetCharacter:FindFirstChild("BodyEffects")
-    local koFlag = bodyEffects and bodyEffects:FindFirstChild("K.O")
-
-    return koFlag and koFlag.Value == true
-end
-
-local function findTargetPlayer(args)
-    local nameFragment = args and args[1]
-    local players = game:GetService("Players"):GetPlayers()
-    local localPlayer = game:GetService("Players").LocalPlayer
-
-    if nameFragment then
-        local lowered = nameFragment:lower()
-        for _, plr in ipairs(players) do
-            if plr ~= localPlayer and plr.Name:lower():find(lowered, 1, true) then
-                return plr
-            end
-        end
-    end
-
-    local closestPlayer = nil
-    local closestDistance = math.huge
-    local _, localChar = getLocalCharacter()
-    local localRoot = localChar and localChar:FindFirstChild("HumanoidRootPart")
-
-    if localRoot then
-        for _, plr in ipairs(players) do
-            if plr ~= localPlayer and plr.Character then
-                local root = plr.Character:FindFirstChild("HumanoidRootPart")
-                if root then
-                    local distance = (root.Position - localRoot.Position).Magnitude
-                    if distance < closestDistance then
-                        closestDistance = distance
-                        closestPlayer = plr
-                    end
-                end
-            end
-        end
-    end
-
-    return closestPlayer
-end
-
-local function moveTowardTarget(localHumanoid, targetRoot)
-    if not localHumanoid or not targetRoot then
-        return
-    end
-
-    pcall(function()
-        localHumanoid:MoveTo(targetRoot.Position)
-    end)
-end
-
-local function activateTool(tool)
-    if tool and tool.Activate then
-        pcall(function()
-            tool:Activate()
-        end)
-    end
-end
-
-function StandController:startSilentAim(target)
-    if not self.silentAimEnabled or not target then
-        return
-    end
-
-    if self.silentAimConnection then
-        self.silentAimConnection:Disconnect()
-        self.silentAimConnection = nil
-    end
-
-    self.silentAimTarget = target
-
-    local runService = game:GetService("RunService")
-    self.silentAimConnection = runService.RenderStepped:Connect(function()
-        local _, char = getLocalCharacter()
-        local root = getRoot(char)
-        local targetRoot = target.Character and getRoot(target.Character)
-        local camera = workspace.CurrentCamera
-
-        if not root or not targetRoot then
-            self:stopSilentAim()
-            return
-        end
-
-        root.CFrame = CFrame.lookAt(root.Position, targetRoot.Position)
-        if camera then
-            camera.CFrame = CFrame.new(camera.CFrame.Position, targetRoot.Position)
-        end
-    end)
-end
-
-function StandController:stopSilentAim()
-    if self.silentAimConnection then
-        self.silentAimConnection:Disconnect()
-        self.silentAimConnection = nil
-    end
-
-    self.silentAimTarget = nil
-end
-
-function StandController:dance()
-    local _, char = getLocalCharacter()
-    local humanoid = getHumanoid(char)
-
-    if not humanoid then
-        return
-    end
-
-    local dance = Instance.new("Animation")
-    dance.AnimationId = "rbxassetid://3189773368"
-
-    local track = humanoid:LoadAnimation(dance)
-    if track then
-        track.Looped = false
-        track:Play()
-    end
-end
-
-StandController.actions = {
-    summon = function(ctx)
-        local _, char = getLocalCharacter()
-        if not char then
-            return
-        end
-
-        for _, part in ipairs(char:GetChildren()) do
-            if part:IsA("BasePart") then
-                part.LocalTransparencyModifier = 0
-                part.CanCollide = true
-            end
-        end
-    end,
-
-    visibility = function(ctx)
-        local controller = ctx.controller
-        local _, char = getLocalCharacter()
-        if not char then
-            return
-        end
-
-        controller.isInvisible = not controller.isInvisible
-        local transparency = controller.isInvisible and 1 or 0
-
-        for _, part in ipairs(char:GetChildren()) do
-            if part:IsA("BasePart") then
-                part.LocalTransparencyModifier = transparency
-                part.CanCollide = not controller.isInvisible
-            end
-        end
-    end,
-
-    repair = function(_)
-        local _, char = getLocalCharacter()
-        local humanoid = getHumanoid(char)
-        if humanoid then
-            humanoid.Health = humanoid.MaxHealth
-        end
-    end,
-
-    rejoin = function(ctx)
-        pcall(function()
-            local teleportService = game:GetService("TeleportService")
-            teleportService:Teleport(game.PlaceId, ctx.player)
-        end)
-    end,
-
-    say = function(ctx)
-        local message = table.concat(ctx.args or {}, " ")
-        pcall(function()
-            local chatEvents = game:GetService("ReplicatedStorage"):FindFirstChild("DefaultChatSystemChatEvents")
-            local sayEvent = chatEvents and chatEvents:FindFirstChild("SayMessageRequest")
-            if sayEvent then
-                sayEvent:FireServer(message, "All")
-            end
-        end)
-    end,
-
-    dash = function(_)
-        local _, char = getLocalCharacter()
-        local humanoid = getHumanoid(char)
-        local root = char and char:FindFirstChild("HumanoidRootPart")
-        if humanoid and root then
-            pcall(function()
-                root.Velocity = root.CFrame.LookVector * 80
-            end)
-        end
-    end,
-
-    bring = function(ctx)
-        local target = findTargetPlayer(ctx.args)
-        local player, char = getLocalCharacter()
-        local localRoot = getRoot(char)
-        local targetRoot = target and target.Character and getRoot(target.Character)
-
-        if targetRoot and localRoot then
-            targetRoot.CFrame = localRoot.CFrame * CFrame.new(0, 0, -3)
-        end
-    end,
-
-    lightAttack = function(_)
-        local player, char = getLocalCharacter()
-        local humanoid = getHumanoid(char)
-        local tool = ensureEquippedTool(humanoid, player)
-        activateTool(tool)
-    end,
-
-    lockTarget = function(ctx)
-        ctx.controller.lockedTarget = findTargetPlayer(ctx.args)
-    end,
-
-    autoKill = function(ctx)
-        local controller = ctx.controller
-        local target = controller.lockedTarget or findTargetPlayer(ctx.args)
-        if not target or not target.Character then
-            warnf("No valid target for akill")
-            return
-        end
-
-        local player, char = getLocalCharacter()
-        local humanoid = getHumanoid(char)
-        local tool = ensureEquippedTool(humanoid, player)
-        local targetHumanoid = getHumanoid(target.Character)
-        local targetRoot = getRoot(target.Character)
-
-        if not (humanoid and tool and targetHumanoid and targetRoot) then
-            warnf("Unable to engage akill")
-            return
-        end
-
-        controller:startSilentAim(target)
-
-        local iterations = 0
-        while iterations < 150 and targetHumanoid.Health > 0 and not isKnocked(target.Character) do
-            moveTowardTarget(humanoid, targetRoot)
-            activateTool(tool)
-            task.wait(0.08)
-            iterations += 1
-        end
-
-        controller:stopSilentAim()
-
-        if isKnocked(target.Character) then
-            pcall(function()
-                game:GetService("ReplicatedStorage"):WaitForChild("MainEvent"):FireServer("Stomp")
-            end)
-            controller:dance()
-        end
-    end,
-
-    knock = function(ctx)
-        local controller = ctx.controller
-        local target = controller.lockedTarget or findTargetPlayer(ctx.args)
-        if not target or not target.Character then
-            warnf("No valid target to knock")
-            return
-        end
-
-        local player, char = getLocalCharacter()
-        local humanoid = getHumanoid(char)
-        local tool = ensureEquippedTool(humanoid, player)
-        local targetHumanoid = getHumanoid(target.Character)
-        local targetRoot = getRoot(target.Character)
-
-        if not (humanoid and tool and targetHumanoid and targetRoot) then
-            warnf("Unable to knock target")
-            return
-        end
-
-        controller:startSilentAim(target)
-
-        local iterations = 0
-        while iterations < 150 and targetHumanoid.Health > 0 and not isKnocked(target.Character) do
-            moveTowardTarget(humanoid, targetRoot)
-            activateTool(tool)
-            task.wait(0.08)
-            iterations += 1
-        end
-
-        controller:stopSilentAim()
-    end,
-
-    sky = function(_)
-        local _, char = getLocalCharacter()
-        local root = char and char:FindFirstChild("HumanoidRootPart")
-        if root then
-            root.CFrame = root.CFrame + Vector3.new(0, 50, 0)
-        end
-    end,
-
-    fling = function(_)
-        local _, char = getLocalCharacter()
-        local root = char and char:FindFirstChild("HumanoidRootPart")
-        if root then
-            root.Velocity = Vector3.new(0, 0, 0)
-            root.RotVelocity = Vector3.new(0, 40, 0)
-        end
-    end,
-
-    aura = function(ctx)
-        local enabled = ctx.enabled == true
-        local _, char = getLocalCharacter()
-        if not char then
-            return
-        end
-
-        for _, part in ipairs(char:GetChildren()) do
-            if part:IsA("BasePart") then
-                part.Material = enabled and Enum.Material.Neon or Enum.Material.Plastic
-            end
-        end
-    end,
-
-    sentry = function(_)
-        -- Placeholder for sentry deployment logic
-    end,
-
-    blasterSentry = function(_)
-        -- Placeholder for blaster sentry deployment logic
-    end,
-
-    assist = function(_)
-        local _, char = getLocalCharacter()
-        local humanoid = getHumanoid(char)
-        if humanoid then
-            humanoid.WalkSpeed = 24
-        end
-    end,
-
-    tpLocation = function(ctx)
-        local gunName = table.concat(ctx.args or {}, " ")
-        if gunName == "" then
-            return
-        end
-
-        if ctx.controller.allowedGuns[gunName:lower()] and StandController.actions.gun then
-            StandController.actions.gun({
-                player = ctx.player,
-                controller = ctx.controller,
-                args = ctx.args,
-                gun = gunName,
-            })
-        else
-            warnf("Unknown gun preset: " .. gunName)
-        end
-    end,
-
-    tpPlayers = function(_) end,
-
-    whitelist = function(_) end,
-
-    unwhitelist = function(_) end,
-
-    autoStomp = function(ctx)
-        if ctx.enabled then
-            ctx.controller:startAutoStomp()
-        else
-            ctx.controller:stopAutoStomp()
-        end
-    end,
-
-    gun = function(ctx)
-        local player, char = getLocalCharacter()
-        local humanoid = getHumanoid(char)
-        local gunName = ctx.gun and ctx.gun:lower()
-
-        if not (player and humanoid and gunName and ctx.controller.allowedGuns[gunName]) then
-            return
-        end
-
-        local backpack = player:FindFirstChild("Backpack")
-        local tool = findToolByName(backpack, gunName) or findToolByName(char, gunName) or humanoid:FindFirstChildOfClass("Tool")
-
-        if tool then
-            humanoid:EquipTool(tool)
-        else
-            warnf("Gun not found in inventory: " .. gunName)
-        end
-    end,
-}
 
 function StandController:isAuthorized(name)
     if not name then
         return false
     end
 
-    name = name:lower()
-
-    if name == (self.config.Owner or ""):lower() then
+    if self.owner and name:lower() == self.owner:lower() then
         return true
     end
 
-    return self.whitelist[name] == true
+    return self.state.whitelist[name:lower()] == true
 end
 
 function StandController:addWhitelist(user)
-    if user and user ~= "" then
-        self.whitelist[user:lower()] = true
+    if not user then
+        return
     end
+    self.state.whitelist[user:lower()] = true
 end
 
 function StandController:removeWhitelist(user)
-    if user and user ~= "" then
-        self.whitelist[user:lower()] = nil
+    if not user then
+        return
+    end
+    self.state.whitelist[user:lower()] = nil
+end
+
+-- Initialization helpers
+function StandController:randomVoidCFrame()
+    local offset = Vector3.new(math.random(-50, 50), math.random(-20, 20), math.random(-50, 50))
+    return self.voidBase + offset
+end
+
+function StandController:teleportVoid()
+    local lp = getLocalPlayer()
+    local root = getRoot(getCharacter(lp))
+    if root then
+        root.CFrame = self:randomVoidCFrame()
+    end
+    self.state.voided = true
+end
+
+function StandController:preloadAnimations()
+    local humanoid = getHumanoid(getCharacter(getLocalPlayer()))
+    if not humanoid then
+        return
+    end
+
+    if self.danceAnimationId then
+        local anim = Instance.new("Animation")
+        anim.AnimationId = self.danceAnimationId
+        local track = humanoid:LoadAnimation(anim)
+        track:Stop()
+        self.cachedDanceTrack = track
     end
 end
 
-function StandController:applyFeatureToggles()
-    if self.config.DisableRendering then
-        -- Placeholder: actual rendering disablement would go here
-        print("[Stand] Rendering disabled")
+function StandController:buyGunIfMissing(name)
+    local lp = getLocalPlayer()
+    local backpack = lp:FindFirstChild("Backpack")
+    local char = getCharacter(lp)
+    local function hasTool(container)
+        if not container then
+            return false
+        end
+        for _, tool in ipairs(container:GetChildren()) do
+            if tool:IsA("Tool") and stringLower(tool.Name) == name then
+                return true
+            end
+        end
+        return false
     end
 
-    if self.config.BlackScreen then
-        -- Placeholder: actual black screen effect would go here
-        print("[Stand] Black screen enabled")
+    if hasTool(backpack) or hasTool(char) then
+        return true
     end
 
-    if self.config.FPSCap and type(self.config.FPSCap) == "number" then
-        print("[Stand] FPS capped at " .. tostring(self.config.FPSCap))
+    if self.mainEvent then
+        pcall(function()
+            self.mainEvent:FireServer("BuyItem", name)
+        end)
+    end
+
+    return hasTool(backpack) or hasTool(char)
+end
+
+function StandController:autoAcquireGuns()
+    for gun in pairs(self.allowedGuns) do
+        self:buyGunIfMissing(gun)
     end
 end
 
-function StandController:hookOwnerChat(player)
-    if self.ownerChatConnection then
-        self.ownerChatConnection:Disconnect()
-        self.ownerChatConnection = nil
+function StandController:equipAllowedTool()
+    local lp = getLocalPlayer()
+    local char = getCharacter(lp)
+    local humanoid = getHumanoid(char)
+    if not humanoid then
+        return nil
     end
 
-    self.ownerChatConnection = player.Chatted:Connect(function(message)
-        self:parseChat(message, player.Name)
+    local backpack = lp:FindFirstChild("Backpack")
+    local function findTool(container)
+        if not container then
+            return nil
+        end
+        for _, tool in ipairs(container:GetChildren()) do
+            if tool:IsA("Tool") and self.allowedGuns[stringLower(tool.Name)] then
+                return tool
+            end
+        end
+        return nil
+    end
+
+    local equipped = humanoid:FindFirstChildOfClass("Tool")
+    if equipped and self.allowedGuns[stringLower(equipped.Name)] then
+        return equipped
+    end
+
+    local found = findTool(char) or findTool(backpack)
+    if found then
+        humanoid:EquipTool(found)
+        return found
+    end
+
+    return nil
+end
+
+function StandController:autoReload(tool)
+    if not tool then
+        return
+    end
+    local ammo = tool:FindFirstChild("Ammo")
+    if ammo and ammo:IsA("IntValue") and ammo.Value <= 0 then
+        if self.mainEvent then
+            pcall(function()
+                self.mainEvent:FireServer("Reload", tool)
+            end)
+        end
+    end
+end
+
+function StandController:aimAtTarget(target)
+    local char = getCharacter(getLocalPlayer())
+    local root = getRoot(char)
+    local targetChar = getCharacter(target)
+    if not (root and targetChar) then
+        return
+    end
+
+    local targetRoot = getRoot(targetChar)
+    local targetHead = getHead(targetChar)
+    local focus = (targetHead and targetHead.Position) or (targetRoot and targetRoot.Position)
+    if not focus then
+        return
+    end
+
+    root.CFrame = CFrame.lookAt(root.Position, focus)
+    local cam = workspace.CurrentCamera
+    if cam then
+        cam.CFrame = CFrame.new(cam.CFrame.Position, focus)
+    end
+end
+
+function StandController:isKO(plr)
+    local char = getCharacter(plr)
+    if not char then
+        return false
+    end
+    local effects = char:FindFirstChild("BodyEffects")
+    if not effects then
+        return false
+    end
+    local ko = effects:FindFirstChild("K.O")
+    local dead = effects:FindFirstChild("Dead")
+    return (ko and ko.Value) or (dead and dead.Value) or false
+end
+
+function StandController:shootTarget(target)
+    local tool = self:equipAllowedTool()
+    if not tool then
+        return
+    end
+
+    self:autoReload(tool)
+    self:aimAtTarget(target)
+    pcall(function()
+        tool:Activate()
     end)
 end
 
-function StandController:setupChatListeners()
-    local players = game:GetService("Players")
-    local ownerName = (self.config.Owner or ""):lower()
+function StandController:moveTowardTarget(target)
+    local lp = getLocalPlayer()
+    local humanoid = getHumanoid(getCharacter(lp))
+    local targetRoot = getRoot(getCharacter(target))
+    if humanoid and targetRoot then
+        humanoid:MoveTo(targetRoot.Position)
+    end
+end
 
-    for _, plr in ipairs(players:GetPlayers()) do
-        if plr.Name:lower() == ownerName then
-            self:hookOwnerChat(plr)
+function StandController:knockTarget(target)
+    if not target then
+        return true
+    end
+    if self:isKO(target) then
+        return true
+    end
+
+    self:shootTarget(target)
+    self:moveTowardTarget(target)
+    return self:isKO(target)
+end
+
+function StandController:stompTarget(target)
+    if self.mainEvent then
+        pcall(function()
+            self.mainEvent:FireServer("Stomp")
+        end)
+    end
+end
+
+function StandController:forceDance()
+    if self.cachedDanceTrack then
+        self.cachedDanceTrack:Play()
+        return
+    end
+
+    local humanoid = getHumanoid(getCharacter(getLocalPlayer()))
+    if not humanoid then
+        return
+    end
+
+    local anim = Instance.new("Animation")
+    anim.AnimationId = self.danceAnimationId
+    local track = humanoid:LoadAnimation(anim)
+    track:Play()
+    self.cachedDanceTrack = track
+end
+
+function StandController:bringTarget(target)
+    local lpRoot = getRoot(getCharacter(getLocalPlayer()))
+    local tRoot = getRoot(getCharacter(target))
+    if lpRoot and tRoot then
+        tRoot.CFrame = lpRoot.CFrame + Vector3.new(0, 3, 0)
+    end
+end
+
+-- Loop updates
+function StandController:updateVoidIdle(dt)
+    if not self.state.voided then
+        return
+    end
+
+    self.state.idleJitterClock = self.state.idleJitterClock + dt
+    if self.state.idleJitterClock >= 5 then
+        self.state.idleJitterClock = 0
+        self:teleportVoid()
+    end
+end
+
+function StandController:updateFollow(dt)
+    if self.state.voided then
+        return
+    end
+    if self.state.stay then
+        return
+    end
+
+    local owner = players():FindFirstChild(self.owner or "")
+    local lp = getLocalPlayer()
+    local humanoid = getHumanoid(getCharacter(lp))
+    local ownerRoot = getRoot(getCharacter(owner))
+    if humanoid and ownerRoot and self.state.followOwner then
+        local desired = ownerRoot.CFrame * CFrame.new(0, 3, -4)
+        humanoid:MoveTo(desired.Position)
+    end
+end
+
+function StandController:updateAssist()
+    if self.state.voided then
+        return
+    end
+    for username in pairs(self.state.assistTargets) do
+        local target = players():FindFirstChild(username)
+        if target then
+            self:moveTowardTarget(target)
+        end
+    end
+end
+
+function StandController:updateAura()
+    if self.state.voided then
+        return
+    end
+    if not self.state.aura then
+        return
+    end
+    for _, target in ipairs(players():GetPlayers()) do
+        if target ~= getLocalPlayer() and stringLower(target.Name) ~= stringLower(self.owner) then
+            if not self.state.auraWhitelist[target.Name:lower()] and not self.state.whitelist[target.Name:lower()] then
+                self:shootTarget(target)
+            end
+        end
+    end
+end
+
+function StandController:updateCombat()
+    if self.state.voided then
+        return
+    end
+    if self.state.loopknockTarget then
+        local target = players():FindFirstChild(self.state.loopknockTarget)
+        if target then
+            if self:knockTarget(target) then
+                self.state.loopknockTarget = nil
+            end
         end
     end
 
-    if self.ownerJoinConnection then
-        self.ownerJoinConnection:Disconnect()
+    if self.state.loopkillTarget then
+        local target = players():FindFirstChild(self.state.loopkillTarget)
+        if target then
+            if self:knockTarget(target) then
+                self:stompTarget(target)
+                self:forceDance()
+                self.state.loopkillTarget = nil
+            end
+        end
     end
 
-    self.ownerJoinConnection = players.PlayerAdded:Connect(function(plr)
-        if plr.Name:lower() == ownerName then
-            self:hookOwnerChat(plr)
+    if self.state.akill and self.state.lastTarget then
+        local target = players():FindFirstChild(self.state.lastTarget)
+        if target and self:knockTarget(target) then
+            self:stompTarget(target)
+            self:forceDance()
         end
+    end
+end
+
+function StandController:update(dt)
+    self:updateVoidIdle(dt)
+    self:updateFollow(dt)
+    self:updateAssist()
+    self:updateAura()
+    self:updateCombat()
+end
+
+function StandController:startLoops()
+    if self.connections.loop then
+        self.connections.loop:Disconnect()
+    end
+
+    self.connections.loop = runService().Heartbeat:Connect(function(dt)
+        self:update(dt)
     end)
 end
 
-function StandController:announce(text)
-    print("[Stand] " .. text)
+function StandController:stopLoops()
+    for _, conn in pairs(self.connections) do
+        conn:Disconnect()
+    end
+    self.connections = {}
 end
 
-function StandController:startAutoStomp()
-    if self.autoStomp then return end
-    self.autoStomp = true
-
-    game:GetService("RunService"):BindToRenderStep(
-        "MoonStand-AutoStomp",
-        0,
-        function()
-            game:GetService("ReplicatedStorage")
-                :WaitForChild("MainEvent")
-                :FireServer("Stomp")
+-- Command parsing
+local function normalizeParts(message)
+    local parts = {}
+    for word in message:gmatch('%S+') do
+        if word:sub(1, 1) == '"' and word:sub(-1) == '"' then
+            table.insert(parts, word:sub(2, -2))
+        else
+            table.insert(parts, word)
         end
-    )
-
-    self:announce("Auto Stomp enabled")
+    end
+    return parts
 end
 
-function StandController:stopAutoStomp()
-    if not self.autoStomp then return end
-    self.autoStomp = false
-
-    game:GetService("RunService"):UnbindFromRenderStep("MoonStand-AutoStomp")
-    self:announce("Auto Stomp disabled")
-end
-
--- ==============================
--- Command Parsing & Dispatch
--- ==============================
-function StandController:executeCommand(command, args, speaker)
+function StandController:executeCommand(command, args)
     local handler = self.commands[command]
     if handler then
-        handler(self, args, speaker)
+        handler(self, args)
     else
-        warnf("Unknown command: " .. tostring(command))
+        warnf("Unknown command: " .. command)
     end
 end
 
 function StandController:parseChat(msg, speaker)
-    if type(msg) ~= "string" then return end
-    if msg:sub(1, 1) ~= COMMAND_PREFIX then return end
-    if not self:isAuthorized(speaker) then return end
-
-    local args = {}
-    for word in msg:gmatch("%S+") do
-        table.insert(args, word)
+    if type(msg) ~= "string" then
+        return
+    end
+    if msg:sub(1, 1) ~= COMMAND_PREFIX then
+        return
+    end
+    if not self:isAuthorized(speaker) then
+        return
     end
 
-    local raw = args[1]
-    if not raw or #raw < 2 then return end
-
+    local parts = normalizeParts(msg)
+    local raw = parts[1]
+    if not raw or #raw < 2 then
+        return
+    end
     local command = raw:sub(2):lower()
-    table.remove(args, 1)
-
-    self:executeCommand(command, args, speaker)
+    table.remove(parts, 1)
+    self:executeCommand(command, parts)
 end
 
--- ==============================
--- Command Handlers
--- ==============================
-local function summonHandler(self)
-    if StandController.actions.summon then
-        StandController.actions.summon({
-            player = game.Players.LocalPlayer,
-            controller = self,
-        })
+function StandController:hookChat()
+    local function bind(plr)
+        if not plr or plr.Name:lower() ~= (self.owner or ""):lower() then
+            return
+        end
+        if self.connections.chat then
+            self.connections.chat:Disconnect()
+        end
+        self.connections.chat = plr.Chatted:Connect(function(msg)
+            self:parseChat(msg, plr.Name)
+        end)
     end
 
-    self:announce("Stand summoned/visible")
+    for _, plr in ipairs(players():GetPlayers()) do
+        bind(plr)
+    end
+
+    if self.connections.playerAdded then
+        self.connections.playerAdded:Disconnect()
+    end
+    self.connections.playerAdded = players().PlayerAdded:Connect(bind)
 end
 
-local function visibilityHandler(self)
-    if StandController.actions.visibility then
-        StandController.actions.visibility({
-            player = game.Players.LocalPlayer,
-            controller = self,
-        })
+-- Command handlers
+local function summonHandler(self, args)
+    self.state.voided = false
+    self.state.followOwner = true
+    self.state.stay = false
+
+    local owner = players():FindFirstChild(self.owner or "")
+    local ownerRoot = getRoot(getCharacter(owner))
+    local root = getRoot(getCharacter(getLocalPlayer()))
+    if ownerRoot and root then
+        root.CFrame = ownerRoot.CFrame * CFrame.new(0, 3, -4)
     end
 
-    self:announce("Stand visibility toggled")
+    if args[1] and args[1]:lower() == "stay" then
+        self.state.followOwner = false
+        self.state.stay = true
+    end
+end
+
+local function stayHandler(self)
+    self.state.voided = false
+    self.state.followOwner = false
+    self.state.stay = true
+
+    local owner = players():FindFirstChild(self.owner or "")
+    local ownerRoot = getRoot(getCharacter(owner))
+    local root = getRoot(getCharacter(getLocalPlayer()))
+    if ownerRoot and root then
+        root.CFrame = ownerRoot.CFrame * CFrame.new(0, 3, -4)
+    end
+end
+
+local function voidHandler(self)
+    self.state.followOwner = false
+    self.state.stay = false
+    self.state.loopkillTarget = nil
+    self.state.loopknockTarget = nil
+    self.state.akill = false
+    self.state.assistTargets = {}
+    self.state.aura = false
+    self.state.voided = true
+    self:teleportVoid()
 end
 
 local function repairHandler(self)
-    if StandController.actions.repair then
-        StandController.actions.repair({
-            player = game.Players.LocalPlayer,
-            controller = self,
-        })
-    end
-
-    self:announce("Stand repaired")
+    self.state.loopkillTarget = nil
+    self.state.loopknockTarget = nil
+    self.state.akill = false
+    self.state.aura = false
+    self.state.assistTargets = {}
+    self.state.followOwner = false
+    self.state.stay = false
+    self.state.voided = true
+    self:teleportVoid()
 end
 
 local function rejoinHandler(self)
-    if StandController.actions.rejoin then
-        StandController.actions.rejoin({
-            player = game.Players.LocalPlayer,
-            controller = self,
-        })
-    end
+    local tp = game:GetService("TeleportService")
+    pcall(function()
+        tp:Teleport(game.PlaceId, getLocalPlayer())
+    end)
+end
 
-    self:announce("Rejoining server")
+local function maskHandler(self, args)
+    local state = args[1] and args[1]:lower()
+    if state == "on" then
+        self.state.mask = true
+    elseif state == "off" then
+        self.state.mask = false
+    else
+        warnf("Usage: .mask on/off")
+    end
 end
 
 local function sayHandler(self, args)
-    if StandController.actions.say then
-        StandController.actions.say({
-            player = game.Players.LocalPlayer,
-            controller = self,
-            args = args,
-        })
+    local message = table.concat(args, " ")
+    if message == "" then
+        return
     end
-
-    self:announce(table.concat(args, " "))
+    local chat = replicatedStorage():FindFirstChild("DefaultChatSystemChatEvents")
+    if chat and chat:FindFirstChild("SayMessageRequest") then
+        chat.SayMessageRequest:FireServer(message, "All")
+    end
 end
 
 local function knockHandler(self, args)
-    if StandController.actions.knock then
-        StandController.actions.knock({
-            player = game.Players.LocalPlayer,
-            controller = self,
-            args = args,
-        })
+    local target = findPlayerByFragment(args[1])
+    if target then
+        self.state.lastTarget = target.Name
+        self.state.loopknockTarget = target.Name
     end
-
-    self:announce("Knock attempt started")
 end
 
 local function bringHandler(self, args)
-    if StandController.actions.bring then
-        StandController.actions.bring({
-            player = game.Players.LocalPlayer,
-            controller = self,
-            args = args,
-        })
+    local target = findPlayerByFragment(args[1])
+    if target then
+        self.state.targetForBring = target.Name
+        self:aimAtTarget(target)
+        self:bringTarget(target)
     end
-
-    self:announce("Bring executed")
 end
 
-local function lightAttackHandler(self)
-    if StandController.actions.lightAttack then
-        StandController.actions.lightAttack({
-            player = game.Players.LocalPlayer,
-            controller = self,
-        })
+local function stompHandler(self, args)
+    local target = findPlayerByFragment(args[1])
+    if target then
+        self.state.targetForStomp = target.Name
+        self:aimAtTarget(target)
+        if self:knockTarget(target) then
+            self:stompTarget(target)
+        end
     end
-
-    self:announce("Light attack")
 end
 
-local function lockTargetHandler(self)
-    if StandController.actions.lockTarget then
-        StandController.actions.lockTarget({
-            player = game.Players.LocalPlayer,
-            controller = self,
-        })
+local function loopkillHandler(self, args)
+    local target = findPlayerByFragment(args[1])
+    if target then
+        self.state.loopkillTarget = target.Name
+        self.state.lastTarget = target.Name
     end
-
-    self:announce("Lock target")
 end
 
-local function autoKillHandler(self)
-    if StandController.actions.autoKill then
-        StandController.actions.autoKill({
-            player = game.Players.LocalPlayer,
-            controller = self,
-        })
+local function loopknockHandler(self, args)
+    local target = findPlayerByFragment(args[1])
+    if target then
+        self.state.loopknockTarget = target.Name
+        self.state.lastTarget = target.Name
     end
-
-    self:announce("Auto-kill engaged")
 end
 
-local function skyHandler(self)
-    if StandController.actions.sky then
-        StandController.actions.sky({
-            player = game.Players.LocalPlayer,
-            controller = self,
-        })
+local function akillHandler(self, args)
+    local state = args[1] and args[1]:lower()
+    if state == "on" then
+        if self.state.lastTarget then
+            self.state.akill = true
+        else
+            warnf("No target locked for akill")
+        end
+    elseif state == "off" then
+        self.state.akill = false
+    else
+        warnf("Usage: .akill on/off")
     end
-
-    self:announce("Sky effect triggered")
 end
 
-local function flingHandler(self)
-    if StandController.actions.fling then
-        StandController.actions.fling({
-            player = game.Players.LocalPlayer,
-            controller = self,
-        })
+local function skyHandler(self, args)
+    local target = findPlayerByFragment(args[1])
+    if target then
+        self.state.targetForSky = target.Name
+        local root = getRoot(getCharacter(target))
+        if root then
+            self:aimAtTarget(target)
+            root.Velocity = Vector3.new(0, 200, 0)
+        end
     end
+end
 
-    self:announce("Fling executed")
+local function flingHandler(self, args)
+    local target = findPlayerByFragment(args[1])
+    if target then
+        self.state.targetForFling = target.Name
+        local root = getRoot(getCharacter(target))
+        if root then
+            self:aimAtTarget(target)
+            root.Velocity = Vector3.new(300, 300, 300)
+        end
+    end
 end
 
 local function auraHandler(self, args)
     local state = args[1] and args[1]:lower()
-    if state ~= "on" and state ~= "off" then
-        return warnf("Usage: .a on|off")
-    end
-
-    if StandController.actions.aura then
-        StandController.actions.aura({
-            player = game.Players.LocalPlayer,
-            controller = self,
-            enabled = state == "on",
-            args = args,
-        })
-    end
-
-    self:announce("Aura toggled " .. state)
-end
-
-local function sentryHandler(self)
-    if StandController.actions.sentry then
-        StandController.actions.sentry({
-            player = game.Players.LocalPlayer,
-            controller = self,
-        })
-    end
-
-    self:announce("Sentry deployed")
-end
-
-local function blasterSentryHandler(self)
-    if StandController.actions.blasterSentry then
-        StandController.actions.blasterSentry({
-            player = game.Players.LocalPlayer,
-            controller = self,
-        })
-    end
-
-    self:announce("Blaster sentry deployed")
-end
-
-local function assistHandler(self)
-    if StandController.actions.assist then
-        StandController.actions.assist({
-            player = game.Players.LocalPlayer,
-            controller = self,
-        })
-    end
-
-    self:announce("Assist mode engaged")
-end
-
-local function tpLocationHandler(self, args)
-    local location = table.concat(args, " ")
-
-    if StandController.actions.tpLocation then
-        StandController.actions.tpLocation({
-            player = game.Players.LocalPlayer,
-            controller = self,
-            args = args,
-        })
-    end
-
-    self:announce("Teleporting to location: " .. location)
-end
-
-local function tpPlayerHandler(self, args)
-    if #args >= 2 then
-        if StandController.actions.tpPlayers then
-            StandController.actions.tpPlayers({
-                player = game.Players.LocalPlayer,
-                controller = self,
-                args = args,
-            })
-        end
-
-        self:announce("Teleporting " .. args[1] .. " to " .. args[2])
-    else
-        warnf("Usage: .t <player1> <player2>")
-    end
-end
-
-local function whitelistHandler(self, args)
-    local user = args[1]
-    if user then
-        self:addWhitelist(user)
-
-        if StandController.actions.whitelist then
-            StandController.actions.whitelist({
-                player = game.Players.LocalPlayer,
-                controller = self,
-                args = args,
-                user = user,
-            })
-        end
-
-        self:announce("Whitelisted user " .. user)
-    else
-        warnf("Usage: .wl <user>")
-    end
-end
-
-local function unwhitelistHandler(self, args)
-    local user = args[1]
-    if user then
-        self:removeWhitelist(user)
-
-        if StandController.actions.unwhitelist then
-            StandController.actions.unwhitelist({
-                player = game.Players.LocalPlayer,
-                controller = self,
-                args = args,
-                user = user,
-            })
-        end
-
-        self:announce("Removed user from whitelist: " .. user)
-    else
-        warnf("Usage: .unwl <user>")
-    end
-end
-
-local function autoStompHandler(self, args)
-    local state = args[1] and args[1]:lower()
-
     if state == "on" then
-        self:startAutoStomp()
+        self.state.aura = true
+    elseif state == "off" then
+        self.state.aura = false
+    else
+        warnf("Usage: .a on/off")
+    end
+end
 
-        if StandController.actions.autoStomp then
-            StandController.actions.autoStomp({
-                player = game.Players.LocalPlayer,
-                controller = self,
-                args = args,
-                enabled = true,
-            })
+local function awlHandler(self, args)
+    local target = findPlayerByFragment(args[1]) or { Name = args[1] or "" }
+    if target.Name ~= "" then
+        self.state.auraWhitelist[target.Name:lower()] = true
+    end
+end
+
+local function unawlHandler(self, args)
+    local target = findPlayerByFragment(args[1]) or { Name = args[1] or "" }
+    if target.Name ~= "" then
+        self.state.auraWhitelist[target.Name:lower()] = nil
+    end
+end
+
+local function sentryHandler(self, args)
+    local state = args[1] and args[1]:lower()
+    if state == "on" then
+        self.state.sentry = true
+    elseif state == "off" then
+        self.state.sentry = false
+    else
+        warnf("Usage: .sentry on/off")
+    end
+end
+
+local function bsentryHandler(self, args)
+    local state = args[1] and args[1]:lower()
+    if state == "on" then
+        if self.state.sentry then
+            self.state.bsentry = true
+        else
+            warnf("Enable sentry first")
         end
     elseif state == "off" then
-        self:stopAutoStomp()
-
-        if StandController.actions.autoStomp then
-            StandController.actions.autoStomp({
-                player = game.Players.LocalPlayer,
-                controller = self,
-                args = args,
-                enabled = false,
-            })
-        end
+        self.state.bsentry = false
     else
-        warnf("Usage: .stomp on|off")
+        warnf("Usage: .bsentry on/off")
     end
 end
 
-local function gunHandler(self, args)
-    local gunName = table.concat(args, " "):lower()
-    if gunName == "" then
-        return warnf("Usage: .gun <name>")
+local function assistHandler(self, args)
+    local target = findPlayerByFragment(args[1])
+    if target then
+        self.state.assistTargets[target.Name] = true
     end
-
-    if not self.allowedGuns[gunName] then
-        return warnf("Unknown or disallowed gun: " .. gunName)
-    end
-
-    if StandController.actions.gun then
-        StandController.actions.gun({
-            player = game.Players.LocalPlayer,
-            controller = self,
-            args = args,
-            gun = gunName,
-        })
-    end
-
-    self:announce("Gun request: " .. gunName)
 end
 
-local function silentAimHandler(self, args)
+local function unassistHandler(self, args)
+    local target = findPlayerByFragment(args[1])
+    if target then
+        self.state.assistTargets[target.Name] = nil
+    end
+end
+
+local function fpHandler(self, args)
     local state = args[1] and args[1]:lower()
-
     if state == "on" then
-        self.silentAimEnabled = true
-        self:announce("Silent aim enabled")
+        self.state.fp = true
     elseif state == "off" then
-        self.silentAimEnabled = false
-        self:stopSilentAim()
-        self:announce("Silent aim disabled")
+        self.state.fp = false
     else
-        warnf("Usage: .silent on|off")
+        warnf("Usage: .fp on/off")
+    end
+end
+
+local teleportLocations = {
+    rifle = CFrame.new(-638.75, 18.85, -118.18),
+    lmg = CFrame.new(-577.12, 5.48, -718.03),
+    rev = CFrame.new(-587.53, 5.39, -753.71),
+    db = CFrame.new(-1039.6, 18.85, -256.45),
+    rpg = CFrame.new(118.66, -29.65, -272.35),
+    armor = CFrame.new(528, 50, -637),
+    mil = CFrame.new(470.88, 45.13, -620.63),
+}
+
+local function tpHandler(self, args)
+    local location = args[1] and args[1]:lower()
+    local cf = teleportLocations[location or ""]
+    if not cf then
+        return
+    end
+    local root = getRoot(getCharacter(getLocalPlayer()))
+    if root then
+        root.CFrame = cf
+    end
+end
+
+local function tetherHandler(self, args)
+    local p1 = findPlayerByFragment(args[1])
+    local p2 = findPlayerByFragment(args[2])
+    if p1 and p2 then
+        local root = getRoot(getCharacter(p1))
+        local targetRoot = getRoot(getCharacter(p2))
+        if root and targetRoot then
+            root.CFrame = targetRoot.CFrame + Vector3.new(0, 2, 0)
+        end
+    end
+end
+
+local function wlHandler(self, args)
+    local target = findPlayerByFragment(args[1]) or { Name = args[1] or "" }
+    if target.Name ~= "" then
+        self:addWhitelist(target.Name)
+    end
+end
+
+local function unwlHandler(self, args)
+    local target = findPlayerByFragment(args[1]) or { Name = args[1] or "" }
+    if target.Name ~= "" then
+        self:removeWhitelist(target.Name)
     end
 end
 
 function StandController:initCommands()
-    -- Commands are resolved through this table.
-    -- Only the Owner or whitelisted users may invoke them.
-    -- Aliases intentionally map to shared handlers.
     self.commands = {
-        -- Summon / Visibility
+        -- Summon & Void
         summon = summonHandler,
-        s = summonHandler,
-        v = visibilityHandler,
+        s = stayHandler,
+        v = voidHandler,
 
-        -- Utility / System
+        -- Stand Maintenance
         repair = repairHandler,
         rejoin = rejoinHandler,
+        mask = maskHandler,
         say = sayHandler,
 
-        -- Movement / Combat
+        -- Combat
         d = knockHandler,
         b = bringHandler,
-        l = lightAttackHandler,
-        lk = lockTargetHandler,
-        akill = autoKillHandler,
-
-        -- World Interaction / Effects
+        l = loopkillHandler,
+        lk = loopknockHandler,
+        akill = akillHandler,
         sky = skyHandler,
         fling = flingHandler,
-        ["a"] = auraHandler,
+        a = auraHandler,
+        awl = awlHandler,
+        unawl = unawlHandler,
 
-        -- Sentry / Support
+        -- Protection
         sentry = sentryHandler,
-        bsentry = blasterSentryHandler,
+        bsentry = bsentryHandler,
         assist = assistHandler,
+        unassist = unassistHandler,
+        fp = fpHandler,
 
-        -- Teleportation
-        tp = tpLocationHandler,
-        t = tpPlayerHandler,
+        -- Teleports
+        tp = tpHandler,
+        t = tetherHandler,
 
-        -- Whitelist Management
-        wl = whitelistHandler,
-        unwl = unwhitelistHandler,
-
-        -- Automation
-        stomp = autoStompHandler,
-        autostomp = autoStompHandler,
-        gun = gunHandler,
-        silent = silentAimHandler,
+        -- Permissions
+        wl = wlHandler,
+        unwl = unwlHandler,
     }
+
+    -- Map stomp to ".s <user>" without conflicting with stay command
+    self.commands["s"] = function(controller, args)
+        if args and #args > 0 then
+            return stompHandler(controller, args)
+        end
+        return stayHandler(controller)
+    end
 end
 
 function StandController:start()
-    self:applyFeatureToggles()
+    if not self.owner or self.owner == "" then
+        warnf("Owner not configured")
+        return
+    end
+
+    self:preloadAnimations()
+    self:autoAcquireGuns()
+    self:equipAllowedTool()
+    self:teleportVoid()
+    self:hookChat()
     self:initCommands()
-    self:setupChatListeners()
-    self:announce(self.config.ScriptName .. " bound to " .. tostring(self.config.Owner))
+    self:startLoops()
+    self:announce((env.Script or "MoonStand") .. " awaiting commands from " .. self.owner)
 end
 
--- Instantiate and start the controller
-local controller = StandController.new(env)
+local controller = StandController.new()
 controller:start()
-
--- Example of manual chat parsing; replace with event hooks in production
--- controller:parseChat(".summon", env.Owner)
 
 return controller

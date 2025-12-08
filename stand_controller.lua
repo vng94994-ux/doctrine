@@ -21,6 +21,12 @@ local StandConfig = getgenv().StandConfig or {
 -- Expose config globally so a loader could mutate before requiring
 getgenv().StandConfig = StandConfig
 
+local COMMAND_PREFIX = "."
+
+local function warnf(msg)
+    warn("[Stand] " .. msg)
+end
+
 -- ==============================
 -- Core Loader (simulated)
 -- ==============================
@@ -29,7 +35,7 @@ local ok, err = pcall(function()
 end)
 
 if not ok then
-    warn("[Stand] Core load failed:", err)
+    warnf("Core load failed: " .. tostring(err))
 end
 
 -- ==============================
@@ -104,13 +110,13 @@ function StandController:executeCommand(command, args, speaker)
     if handler then
         handler(self, args, speaker)
     else
-        warn("[Stand] Unknown command: " .. tostring(command))
+        warnf("Unknown command: " .. tostring(command))
     end
 end
 
 function StandController:parseChat(msg, speaker)
     if type(msg) ~= "string" then return end
-    if msg:sub(1, 1) ~= "." then return end
+    if msg:sub(1, 1) ~= COMMAND_PREFIX then return end
     if not self:isAuthorized(speaker) then return end
 
     local args = {}
@@ -118,7 +124,10 @@ function StandController:parseChat(msg, speaker)
         table.insert(args, word)
     end
 
-    local command = args[1]:sub(2):lower()
+    local raw = args[1]
+    if not raw or #raw < 2 then return end
+
+    local command = raw:sub(2):lower()
     table.remove(args, 1)
 
     self:executeCommand(command, args, speaker)
@@ -178,7 +187,7 @@ end
 local function auraHandler(self, args)
     local state = args[1] and args[1]:lower()
     if state ~= "on" and state ~= "off" then
-        return warn("[Stand] Usage: .a on|off")
+        return warnf("Usage: .a on|off")
     end
 
     self:announce("Aura toggled " .. state)
@@ -205,7 +214,7 @@ local function tpPlayerHandler(self, args)
     if #args >= 2 then
         self:announce("Teleporting " .. args[1] .. " to " .. args[2])
     else
-        warn("[Stand] Usage: .t <player1> <player2>")
+        warnf("Usage: .t <player1> <player2>")
     end
 end
 
@@ -215,7 +224,7 @@ local function whitelistHandler(self, args)
         self:addWhitelist(user)
         self:announce("Whitelisted user " .. user)
     else
-        warn("[Stand] Usage: .wl <user>")
+        warnf("Usage: .wl <user>")
     end
 end
 
@@ -225,11 +234,14 @@ local function unwhitelistHandler(self, args)
         self:removeWhitelist(user)
         self:announce("Removed user from whitelist: " .. user)
     else
-        warn("[Stand] Usage: .unwl <user>")
+        warnf("Usage: .unwl <user>")
     end
 end
 
 function StandController:initCommands()
+    -- Commands are resolved through this table.
+    -- Only the Owner or whitelisted users may invoke them.
+    -- Aliases intentionally map to shared handlers.
     self.commands = {
         -- Summon / Visibility
         summon = summonHandler,
@@ -272,7 +284,7 @@ function StandController:start()
     self:applyFeatureToggles()
     self:initCommands()
     -- In a real environment, connect this to Player.Chatted or a similar event
-    self:announce(self.config.ScriptName .. " loaded for owner " .. tostring(self.config.Owner))
+    self:announce(self.config.ScriptName .. " bound to " .. tostring(self.config.Owner))
 end
 
 -- Instantiate and start the controller

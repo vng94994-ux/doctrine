@@ -54,6 +54,30 @@ end
 -- ==============================
 local StandController = {}
 StandController.__index = StandController
+StandController.actions = {
+    summon = function(_) end,
+    visibility = function(_) end,
+    repair = function(_) end,
+    rejoin = function(_) end,
+    say = function(_) end,
+    dash = function(_) end,
+    block = function(_) end,
+    lightAttack = function(_) end,
+    lockTarget = function(_) end,
+    autoKill = function(_) end,
+    sky = function(_) end,
+    fling = function(_) end,
+    aura = function(_) end,
+    sentry = function(_) end,
+    blasterSentry = function(_) end,
+    assist = function(_) end,
+    tpLocation = function(_) end,
+    tpPlayers = function(_) end,
+    whitelist = function(_) end,
+    unwhitelist = function(_) end,
+    autoStomp = function(_) end,
+    gun = function(_) end,
+}
 
 function StandController.new(config)
     local self = setmetatable({}, StandController)
@@ -174,50 +198,135 @@ end
 -- Command Handlers
 -- ==============================
 local function summonHandler(self)
+    if StandController.actions.summon then
+        StandController.actions.summon({
+            player = game.Players.LocalPlayer,
+            controller = self,
+        })
+    end
+
     self:announce("Stand summoned/visible")
 end
 
 local function visibilityHandler(self)
+    if StandController.actions.visibility then
+        StandController.actions.visibility({
+            player = game.Players.LocalPlayer,
+            controller = self,
+        })
+    end
+
     self:announce("Stand visibility toggled")
 end
 
 local function repairHandler(self)
+    if StandController.actions.repair then
+        StandController.actions.repair({
+            player = game.Players.LocalPlayer,
+            controller = self,
+        })
+    end
+
     self:announce("Stand repaired")
 end
 
 local function rejoinHandler(self)
+    if StandController.actions.rejoin then
+        StandController.actions.rejoin({
+            player = game.Players.LocalPlayer,
+            controller = self,
+        })
+    end
+
     self:announce("Rejoining server")
 end
 
 local function sayHandler(self, args)
+    if StandController.actions.say then
+        StandController.actions.say({
+            player = game.Players.LocalPlayer,
+            controller = self,
+            args = args,
+        })
+    end
+
     self:announce(table.concat(args, " "))
 end
 
 local function dashHandler(self)
+    if StandController.actions.dash then
+        StandController.actions.dash({
+            player = game.Players.LocalPlayer,
+            controller = self,
+        })
+    end
+
     self:announce("Dash engaged")
 end
 
 local function blockHandler(self)
+    if StandController.actions.block then
+        StandController.actions.block({
+            player = game.Players.LocalPlayer,
+            controller = self,
+        })
+    end
+
     self:announce("Block raised")
 end
 
 local function lightAttackHandler(self)
+    if StandController.actions.lightAttack then
+        StandController.actions.lightAttack({
+            player = game.Players.LocalPlayer,
+            controller = self,
+        })
+    end
+
     self:announce("Light attack")
 end
 
 local function lockTargetHandler(self)
+    if StandController.actions.lockTarget then
+        StandController.actions.lockTarget({
+            player = game.Players.LocalPlayer,
+            controller = self,
+        })
+    end
+
     self:announce("Lock target")
 end
 
 local function autoKillHandler(self)
+    if StandController.actions.autoKill then
+        StandController.actions.autoKill({
+            player = game.Players.LocalPlayer,
+            controller = self,
+        })
+    end
+
     self:announce("Auto-kill engaged")
 end
 
 local function skyHandler(self)
+    if StandController.actions.sky then
+        StandController.actions.sky({
+            player = game.Players.LocalPlayer,
+            controller = self,
+        })
+    end
+
     self:announce("Sky effect triggered")
 end
 
 local function flingHandler(self)
+    if StandController.actions.fling then
+        StandController.actions.fling({
+            player = game.Players.LocalPlayer,
+            controller = self,
+        })
+    end
+
     self:announce("Fling executed")
 end
 
@@ -227,28 +336,75 @@ local function auraHandler(self, args)
         return warnf("Usage: .a on|off")
     end
 
+    if StandController.actions.aura then
+        StandController.actions.aura({
+            player = game.Players.LocalPlayer,
+            controller = self,
+            enabled = state == "on",
+            args = args,
+        })
+    end
+
     self:announce("Aura toggled " .. state)
 end
 
 local function sentryHandler(self)
+    if StandController.actions.sentry then
+        StandController.actions.sentry({
+            player = game.Players.LocalPlayer,
+            controller = self,
+        })
+    end
+
     self:announce("Sentry deployed")
 end
 
 local function blasterSentryHandler(self)
+    if StandController.actions.blasterSentry then
+        StandController.actions.blasterSentry({
+            player = game.Players.LocalPlayer,
+            controller = self,
+        })
+    end
+
     self:announce("Blaster sentry deployed")
 end
 
 local function assistHandler(self)
+    if StandController.actions.assist then
+        StandController.actions.assist({
+            player = game.Players.LocalPlayer,
+            controller = self,
+        })
+    end
+
     self:announce("Assist mode engaged")
 end
 
 local function tpLocationHandler(self, args)
     local location = table.concat(args, " ")
+
+    if StandController.actions.tpLocation then
+        StandController.actions.tpLocation({
+            player = game.Players.LocalPlayer,
+            controller = self,
+            args = args,
+        })
+    end
+
     self:announce("Teleporting to location: " .. location)
 end
 
 local function tpPlayerHandler(self, args)
     if #args >= 2 then
+        if StandController.actions.tpPlayers then
+            StandController.actions.tpPlayers({
+                player = game.Players.LocalPlayer,
+                controller = self,
+                args = args,
+            })
+        end
+
         self:announce("Teleporting " .. args[1] .. " to " .. args[2])
     else
         warnf("Usage: .t <player1> <player2>")
@@ -259,6 +415,16 @@ local function whitelistHandler(self, args)
     local user = args[1]
     if user then
         self:addWhitelist(user)
+
+        if StandController.actions.whitelist then
+            StandController.actions.whitelist({
+                player = game.Players.LocalPlayer,
+                controller = self,
+                args = args,
+                user = user,
+            })
+        end
+
         self:announce("Whitelisted user " .. user)
     else
         warnf("Usage: .wl <user>")
@@ -269,6 +435,16 @@ local function unwhitelistHandler(self, args)
     local user = args[1]
     if user then
         self:removeWhitelist(user)
+
+        if StandController.actions.unwhitelist then
+            StandController.actions.unwhitelist({
+                player = game.Players.LocalPlayer,
+                controller = self,
+                args = args,
+                user = user,
+            })
+        end
+
         self:announce("Removed user from whitelist: " .. user)
     else
         warnf("Usage: .unwl <user>")
@@ -280,8 +456,26 @@ local function autoStompHandler(self, args)
 
     if state == "on" then
         self:startAutoStomp()
+
+        if StandController.actions.autoStomp then
+            StandController.actions.autoStomp({
+                player = game.Players.LocalPlayer,
+                controller = self,
+                args = args,
+                enabled = true,
+            })
+        end
     elseif state == "off" then
         self:stopAutoStomp()
+
+        if StandController.actions.autoStomp then
+            StandController.actions.autoStomp({
+                player = game.Players.LocalPlayer,
+                controller = self,
+                args = args,
+                enabled = false,
+            })
+        end
     else
         warnf("Usage: .stomp on|off")
     end
@@ -302,6 +496,17 @@ local function gunHandler(self, args)
     local char = lp.Character
     if char and char:FindFirstChild("HumanoidRootPart") then
         char.HumanoidRootPart.CFrame = cf
+
+        if StandController.actions.gun then
+            StandController.actions.gun({
+                player = lp,
+                controller = self,
+                args = args,
+                gun = gunName,
+                cframe = cf,
+            })
+        end
+
         self:announce("Teleported to " .. gunName)
     end
 end

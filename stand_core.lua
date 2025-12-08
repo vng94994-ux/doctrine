@@ -103,9 +103,9 @@ function StandController.new()
     }
 
     self.connections = {}
-    self.voidBase = CFrame.new(0, 6000, 0)
+    self.voidBase = CFrame.new(0, 15000, 0)
     self.mainEvent = replicatedStorage():FindFirstChild("MainEvent")
-    self.danceAnimationId = "rbxassetid://3189773368"
+    self.danceAnimationId = "rbxassetid://15610015346"
 
     self.actions = {}
 
@@ -143,8 +143,21 @@ function StandController:removeWhitelist(user)
 end
 
 -- Initialization helpers
+function StandController:applyCFrame(root, cf, anchor)
+    if not root or not cf then
+        return
+    end
+
+    root.AssemblyLinearVelocity = Vector3.zero
+    root.AssemblyAngularVelocity = Vector3.zero
+    root.CFrame = cf
+    if anchor ~= nil then
+        root.Anchored = anchor
+    end
+end
+
 function StandController:randomVoidCFrame()
-    local offset = Vector3.new(math.random(-50, 50), math.random(-20, 20), math.random(-50, 50))
+    local offset = Vector3.new(math.random(-6000, 6000), math.random(-500, 500), math.random(-6000, 6000))
     return self.voidBase + offset
 end
 
@@ -152,7 +165,7 @@ function StandController:teleportVoid()
     local lp = getLocalPlayer()
     local root = getRoot(getCharacter(lp))
     if root then
-        root.CFrame = self:randomVoidCFrame()
+        self:applyCFrame(root, self:randomVoidCFrame(), true)
     end
     self.state.voided = true
 end
@@ -307,10 +320,11 @@ end
 
 function StandController:moveTowardTarget(target)
     local lp = getLocalPlayer()
-    local humanoid = getHumanoid(getCharacter(lp))
+    local root = getRoot(getCharacter(lp))
     local targetRoot = getRoot(getCharacter(target))
-    if humanoid and targetRoot then
-        humanoid:MoveTo(targetRoot.Position)
+    if root and targetRoot then
+        local desired = targetRoot.CFrame * CFrame.new(0, 3, -4)
+        self:applyCFrame(root, desired, true)
     end
 end
 
@@ -337,7 +351,10 @@ end
 
 function StandController:forceDance()
     if self.cachedDanceTrack then
-        self.cachedDanceTrack:Play()
+        self.cachedDanceTrack.Looped = true
+        if not self.cachedDanceTrack.IsPlaying then
+            self.cachedDanceTrack:Play()
+        end
         return
     end
 
@@ -349,15 +366,24 @@ function StandController:forceDance()
     local anim = Instance.new("Animation")
     anim.AnimationId = self.danceAnimationId
     local track = humanoid:LoadAnimation(anim)
+    track.Looped = true
     track:Play()
     self.cachedDanceTrack = track
+end
+
+function StandController:ensureDancePlaying()
+    if self.cachedDanceTrack and not self.cachedDanceTrack.IsPlaying then
+        self.cachedDanceTrack:Play()
+    elseif not self.cachedDanceTrack then
+        self:forceDance()
+    end
 end
 
 function StandController:bringTarget(target)
     local lpRoot = getRoot(getCharacter(getLocalPlayer()))
     local tRoot = getRoot(getCharacter(target))
     if lpRoot and tRoot then
-        tRoot.CFrame = lpRoot.CFrame + Vector3.new(0, 3, 0)
+        self:applyCFrame(tRoot, lpRoot.CFrame + Vector3.new(0, 3, 0))
     end
 end
 
@@ -383,12 +409,11 @@ function StandController:updateFollow(dt)
     end
 
     local owner = players():FindFirstChild(self.owner or "")
-    local lp = getLocalPlayer()
-    local humanoid = getHumanoid(getCharacter(lp))
     local ownerRoot = getRoot(getCharacter(owner))
-    if humanoid and ownerRoot and self.state.followOwner then
+    local lpRoot = getRoot(getCharacter(getLocalPlayer()))
+    if ownerRoot and lpRoot and self.state.followOwner then
         local desired = ownerRoot.CFrame * CFrame.new(0, 3, -4)
-        humanoid:MoveTo(desired.Position)
+        self:applyCFrame(lpRoot, desired, true)
     end
 end
 
@@ -454,6 +479,7 @@ function StandController:updateCombat()
 end
 
 function StandController:update(dt)
+    self:ensureDancePlaying()
     self:updateVoidIdle(dt)
     self:updateFollow(dt)
     self:updateAssist()
@@ -554,7 +580,7 @@ local function summonHandler(self, args)
     local ownerRoot = getRoot(getCharacter(owner))
     local root = getRoot(getCharacter(getLocalPlayer()))
     if ownerRoot and root then
-        root.CFrame = ownerRoot.CFrame * CFrame.new(0, 3, -4)
+        self:applyCFrame(root, ownerRoot.CFrame * CFrame.new(0, 3, -4), true)
     end
 
     if args[1] and args[1]:lower() == "stay" then
@@ -572,7 +598,7 @@ local function stayHandler(self)
     local ownerRoot = getRoot(getCharacter(owner))
     local root = getRoot(getCharacter(getLocalPlayer()))
     if ownerRoot and root then
-        root.CFrame = ownerRoot.CFrame * CFrame.new(0, 3, -4)
+        self:applyCFrame(root, ownerRoot.CFrame * CFrame.new(0, 3, -4), true)
     end
 end
 
@@ -584,6 +610,11 @@ local function voidHandler(self)
     self.state.akill = false
     self.state.assistTargets = {}
     self.state.aura = false
+    self.state.lastTarget = nil
+    self.state.targetForBring = nil
+    self.state.targetForStomp = nil
+    self.state.targetForSky = nil
+    self.state.targetForFling = nil
     self.state.voided = true
     self:teleportVoid()
 end
@@ -893,6 +924,7 @@ function StandController:start()
     end
 
     self:preloadAnimations()
+    self:forceDance()
     self:autoAcquireGuns()
     self:equipAllowedTool()
     self:teleportVoid()

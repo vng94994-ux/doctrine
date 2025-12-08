@@ -29,5 +29,4 @@ if type(getgenv().Guns) ~= "table" then
 end
 
 -- Load external core logic
--- Replace REPO_RAW_CORE_URL with the raw GitHub URL for stand_core.lua
-loadstring(game:HttpGet("REPO_RAW_CORE_URL"))()
+loadstring(game:HttpGet("https://raw.githubusercontent.com/vng94994-ux/doctrine/refs/heads/main/stand_core.lua"))()

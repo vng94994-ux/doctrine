@@ -54,36 +54,16 @@ end
 -- ==============================
 local StandController = {}
 StandController.__index = StandController
-StandController.actions = {
-    summon = function(_) end,
-    visibility = function(_) end,
-    repair = function(_) end,
-    rejoin = function(_) end,
-    say = function(_) end,
-    dash = function(_) end,
-    block = function(_) end,
-    lightAttack = function(_) end,
-    lockTarget = function(_) end,
-    autoKill = function(_) end,
-    sky = function(_) end,
-    fling = function(_) end,
-    aura = function(_) end,
-    sentry = function(_) end,
-    blasterSentry = function(_) end,
-    assist = function(_) end,
-    tpLocation = function(_) end,
-    tpPlayers = function(_) end,
-    whitelist = function(_) end,
-    unwhitelist = function(_) end,
-    autoStomp = function(_) end,
-    gun = function(_) end,
-}
+StandController.actions = {}
 
 function StandController.new(config)
     local self = setmetatable({}, StandController)
     self.config = config
     self.whitelist = {}
     self.autoStomp = false
+    self.ownerChatConnection = nil
+    self.ownerJoinConnection = nil
+    self.isInvisible = false
 
     for _, user in ipairs(config.Whitelist or {}) do
         self.whitelist[user:lower()] = true
@@ -91,6 +71,322 @@ function StandController.new(config)
 
     return self
 end
+
+local function getHumanoid(character)
+    if not character then
+        return nil
+    end
+
+    return character:FindFirstChildOfClass("Humanoid")
+end
+
+local function getLocalCharacter()
+    local lp = game:GetService("Players").LocalPlayer
+    return lp, lp and lp.Character
+end
+
+local function ensureEquippedTool(humanoid, player)
+    if not humanoid or not player then
+        return nil
+    end
+
+    local tool = humanoid:FindFirstChildOfClass("Tool")
+    if tool then
+        return tool
+    end
+
+    local backpack = player:FindFirstChild("Backpack")
+    if backpack then
+        tool = backpack:FindFirstChildOfClass("Tool")
+        if tool then
+            humanoid:EquipTool(tool)
+            return tool
+        end
+    end
+
+    return nil
+end
+
+local function findTargetPlayer(args)
+    local nameFragment = args and args[1]
+    local players = game:GetService("Players"):GetPlayers()
+    local localPlayer = game:GetService("Players").LocalPlayer
+
+    if nameFragment then
+        local lowered = nameFragment:lower()
+        for _, plr in ipairs(players) do
+            if plr ~= localPlayer and plr.Name:lower():find(lowered, 1, true) then
+                return plr
+            end
+        end
+    end
+
+    local closestPlayer = nil
+    local closestDistance = math.huge
+    local _, localChar = getLocalCharacter()
+    local localRoot = localChar and localChar:FindFirstChild("HumanoidRootPart")
+
+    if localRoot then
+        for _, plr in ipairs(players) do
+            if plr ~= localPlayer and plr.Character then
+                local root = plr.Character:FindFirstChild("HumanoidRootPart")
+                if root then
+                    local distance = (root.Position - localRoot.Position).Magnitude
+                    if distance < closestDistance then
+                        closestDistance = distance
+                        closestPlayer = plr
+                    end
+                end
+            end
+        end
+    end
+
+    return closestPlayer
+end
+
+local function moveTowardTarget(localHumanoid, targetRoot)
+    if not localHumanoid or not targetRoot then
+        return
+    end
+
+    pcall(function()
+        localHumanoid:MoveTo(targetRoot.Position)
+    end)
+end
+
+local function activateTool(tool)
+    if tool and tool.Activate then
+        pcall(function()
+            tool:Activate()
+        end)
+    end
+end
+
+StandController.actions = {
+    summon = function(ctx)
+        local _, char = getLocalCharacter()
+        if not char then
+            return
+        end
+
+        for _, part in ipairs(char:GetChildren()) do
+            if part:IsA("BasePart") then
+                part.LocalTransparencyModifier = 0
+                part.CanCollide = true
+            end
+        end
+    end,
+
+    visibility = function(ctx)
+        local controller = ctx.controller
+        local _, char = getLocalCharacter()
+        if not char then
+            return
+        end
+
+        controller.isInvisible = not controller.isInvisible
+        local transparency = controller.isInvisible and 1 or 0
+
+        for _, part in ipairs(char:GetChildren()) do
+            if part:IsA("BasePart") then
+                part.LocalTransparencyModifier = transparency
+                part.CanCollide = not controller.isInvisible
+            end
+        end
+    end,
+
+    repair = function(_)
+        local _, char = getLocalCharacter()
+        local humanoid = getHumanoid(char)
+        if humanoid then
+            humanoid.Health = humanoid.MaxHealth
+        end
+    end,
+
+    rejoin = function(ctx)
+        pcall(function()
+            local teleportService = game:GetService("TeleportService")
+            teleportService:Teleport(game.PlaceId, ctx.player)
+        end)
+    end,
+
+    say = function(ctx)
+        local message = table.concat(ctx.args or {}, " ")
+        pcall(function()
+            local chatEvents = game:GetService("ReplicatedStorage"):FindFirstChild("DefaultChatSystemChatEvents")
+            local sayEvent = chatEvents and chatEvents:FindFirstChild("SayMessageRequest")
+            if sayEvent then
+                sayEvent:FireServer(message, "All")
+            end
+        end)
+    end,
+
+    dash = function(_)
+        local _, char = getLocalCharacter()
+        local humanoid = getHumanoid(char)
+        local root = char and char:FindFirstChild("HumanoidRootPart")
+        if humanoid and root then
+            pcall(function()
+                root.Velocity = root.CFrame.LookVector * 80
+            end)
+        end
+    end,
+
+    block = function(_)
+        local _, char = getLocalCharacter()
+        local humanoid = getHumanoid(char)
+        if humanoid then
+            humanoid.WalkSpeed = math.max(4, humanoid.WalkSpeed - 8)
+        end
+    end,
+
+    lightAttack = function(_)
+        local player, char = getLocalCharacter()
+        local humanoid = getHumanoid(char)
+        local tool = ensureEquippedTool(humanoid, player)
+        activateTool(tool)
+    end,
+
+    lockTarget = function(ctx)
+        ctx.controller.lockedTarget = findTargetPlayer(ctx.args)
+    end,
+
+    autoKill = function(ctx)
+        local controller = ctx.controller
+        local target = controller.lockedTarget or findTargetPlayer(ctx.args)
+        local player, char = getLocalCharacter()
+        local humanoid = getHumanoid(char)
+        local tool = ensureEquippedTool(humanoid, player)
+
+        if not (target and target.Character) then
+            return
+        end
+
+        local targetHumanoid = getHumanoid(target.Character)
+        local targetRoot = target.Character:FindFirstChild("HumanoidRootPart")
+
+        for _ = 1, 20 do
+            if not targetHumanoid or targetHumanoid.Health <= 0 then
+                break
+            end
+
+            moveTowardTarget(humanoid, targetRoot)
+            activateTool(tool)
+            task.wait(0.1)
+        end
+    end,
+
+    knock = function(ctx)
+        local target = findTargetPlayer(ctx.args)
+        if not target or not target.Character then
+            warnf("No valid target to knock")
+            return
+        end
+
+        local player, char = getLocalCharacter()
+        local humanoid = getHumanoid(char)
+        local tool = ensureEquippedTool(humanoid, player)
+        local targetHumanoid = getHumanoid(target.Character)
+        local targetRoot = target.Character:FindFirstChild("HumanoidRootPart")
+
+        if not targetRoot then
+            warnf("Target has no root part")
+            return
+        end
+
+        for _ = 1, 25 do
+            if not targetHumanoid or targetHumanoid.Health <= 0 then
+                break
+            end
+
+            moveTowardTarget(humanoid, targetRoot)
+            activateTool(tool)
+            task.wait(0.05)
+        end
+    end,
+
+    sky = function(_)
+        local _, char = getLocalCharacter()
+        local root = char and char:FindFirstChild("HumanoidRootPart")
+        if root then
+            root.CFrame = root.CFrame + Vector3.new(0, 50, 0)
+        end
+    end,
+
+    fling = function(_)
+        local _, char = getLocalCharacter()
+        local root = char and char:FindFirstChild("HumanoidRootPart")
+        if root then
+            root.Velocity = Vector3.new(0, 0, 0)
+            root.RotVelocity = Vector3.new(0, 40, 0)
+        end
+    end,
+
+    aura = function(ctx)
+        local enabled = ctx.enabled == true
+        local _, char = getLocalCharacter()
+        if not char then
+            return
+        end
+
+        for _, part in ipairs(char:GetChildren()) do
+            if part:IsA("BasePart") then
+                part.Material = enabled and Enum.Material.Neon or Enum.Material.Plastic
+            end
+        end
+    end,
+
+    sentry = function(_)
+        -- Placeholder for sentry deployment logic
+    end,
+
+    blasterSentry = function(_)
+        -- Placeholder for blaster sentry deployment logic
+    end,
+
+    assist = function(_)
+        local _, char = getLocalCharacter()
+        local humanoid = getHumanoid(char)
+        if humanoid then
+            humanoid.WalkSpeed = 24
+        end
+    end,
+
+    tpLocation = function(ctx)
+        local _, char = getLocalCharacter()
+        local root = char and char:FindFirstChild("HumanoidRootPart")
+        local location = table.concat(ctx.args or {}, " ")
+
+        if root and location ~= "" then
+            local preset = ctx.controller.config.AllowedGuns[location]
+            if typeof(preset) == "CFrame" then
+                root.CFrame = preset
+            end
+        end
+    end,
+
+    tpPlayers = function(_) end,
+
+    whitelist = function(_) end,
+
+    unwhitelist = function(_) end,
+
+    autoStomp = function(ctx)
+        if ctx.enabled then
+            ctx.controller:startAutoStomp()
+        else
+            ctx.controller:stopAutoStomp()
+        end
+    end,
+
+    gun = function(ctx)
+        local _, char = getLocalCharacter()
+        local root = char and char:FindFirstChild("HumanoidRootPart")
+        if root and ctx.cframe then
+            root.CFrame = ctx.cframe
+        end
+    end,
+}
 
 function StandController:isAuthorized(name)
     if not name then
@@ -132,6 +428,38 @@ function StandController:applyFeatureToggles()
     if self.config.FPSCap and type(self.config.FPSCap) == "number" then
         print("[Stand] FPS capped at " .. tostring(self.config.FPSCap))
     end
+end
+
+function StandController:hookOwnerChat(player)
+    if self.ownerChatConnection then
+        self.ownerChatConnection:Disconnect()
+        self.ownerChatConnection = nil
+    end
+
+    self.ownerChatConnection = player.Chatted:Connect(function(message)
+        self:parseChat(message, player.Name)
+    end)
+end
+
+function StandController:setupChatListeners()
+    local players = game:GetService("Players")
+    local ownerName = (self.config.Owner or ""):lower()
+
+    for _, plr in ipairs(players:GetPlayers()) do
+        if plr.Name:lower() == ownerName then
+            self:hookOwnerChat(plr)
+        end
+    end
+
+    if self.ownerJoinConnection then
+        self.ownerJoinConnection:Disconnect()
+    end
+
+    self.ownerJoinConnection = players.PlayerAdded:Connect(function(plr)
+        if plr.Name:lower() == ownerName then
+            self:hookOwnerChat(plr)
+        end
+    end)
 end
 
 function StandController:announce(text)
@@ -253,15 +581,16 @@ local function sayHandler(self, args)
     self:announce(table.concat(args, " "))
 end
 
-local function dashHandler(self)
-    if StandController.actions.dash then
-        StandController.actions.dash({
+local function knockHandler(self, args)
+    if StandController.actions.knock then
+        StandController.actions.knock({
             player = game.Players.LocalPlayer,
             controller = self,
+            args = args,
         })
     end
 
-    self:announce("Dash engaged")
+    self:announce("Knock attempt started")
 end
 
 local function blockHandler(self)
@@ -527,7 +856,7 @@ function StandController:initCommands()
         say = sayHandler,
 
         -- Movement / Combat
-        d = dashHandler,
+        d = knockHandler,
         b = blockHandler,
         l = lightAttackHandler,
         lk = lockTargetHandler,
@@ -561,7 +890,7 @@ end
 function StandController:start()
     self:applyFeatureToggles()
     self:initCommands()
-    -- In a real environment, connect this to Player.Chatted or a similar event
+    self:setupChatListeners()
     self:announce(self.config.ScriptName .. " bound to " .. tostring(self.config.Owner))
 end
 

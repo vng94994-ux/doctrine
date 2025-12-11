@@ -13,8 +13,10 @@ function StandController.new()
     local self = setmetatable({}, StandController)
     self.ownerName = tostring(env.Owner or "")
     self.allowedGuns = {}
-    for _, g in ipairs(env.Guns or {}) do
-        self.allowedGuns[string.lower(g)] = true
+    for _, g in ipairs(env.Guns or env.Gguns or {}) do
+        local lower = string.lower(g)
+        self.allowedGuns[lower] = true
+        self.allowedGuns[normalizeName(lower)] = true
     end
 
     self.state = {
@@ -93,6 +95,10 @@ local ammoShopPaths = {
 local maskShopPaths = {
     mask = workspace.Ignored.Shop["[Breathing Mask] - $66"],
 }
+
+local function normalizeName(name)
+    return string.lower((name or ""):gsub("[^%w]", ""))
+end
 
 local function findBasePart(model)
     if not model then
@@ -285,7 +291,8 @@ function StandController:getNearestTarget()
     local best = math.min(unpack(diffs))
     if best > self.aimRadius then
         return nil
-    end    for _, v in pairs(candidates) do
+    end
+    for _, v in pairs(candidates) do
         if v.diff == best then
             return v.plr
         end
@@ -351,21 +358,23 @@ function StandController:equipGunByName(name)
         return nil
     end
     local lower = string.lower(name)
-    if not self.allowedGuns[lower] then
+    local normalized = normalizeName(lower)
+    if not self.allowedGuns[lower] and not self.allowedGuns[normalized] then
         return nil
     end
     local char = getChar(lp)
     local backpack = lp:FindFirstChild("Backpack")
     local tool = nil
     if char then
-        tool = char:FindFirstChildWhichIsA("Tool", true)
-        if tool and string.lower(tool.Name) == lower then
-            return tool
+        for _, t in ipairs(char:GetChildren()) do
+            if t:IsA("Tool") and (self.allowedGuns[string.lower(t.Name)] or self.allowedGuns[normalizeName(t.Name)]) then
+                return t
+            end
         end
     end
     if backpack then
         for _, t in ipairs(backpack:GetChildren()) do
-            if t:IsA("Tool") and string.lower(t.Name) == lower then
+            if t:IsA("Tool") and (self.allowedGuns[string.lower(t.Name)] or self.allowedGuns[normalizeName(t.Name)]) then
                 tool = t
                 break
             end
@@ -379,7 +388,7 @@ end
 
 function StandController:ensureAmmo(tool, gunName)
     if not tool then
-        return tool, gunName
+        return tool
     end
     local ammoValue
     for _, name in ipairs({"Ammo", "AmmoCount", "Clip", "AmmoInGun"}) do
@@ -423,7 +432,7 @@ function StandController:shootTarget(target)
     self:startAimlock(target)
     local char = getChar(lp)
     local root = getRoot(char)
-    local gunName = gun and string.lower(gun.Name)
+    local gunName = gun and normalizeName(gun.Name)
     while root and target and target.Character and not self:isKO(target) do
         local targetRoot = getRoot(target.Character)
         if not targetRoot then
@@ -473,7 +482,7 @@ function StandController:equipAnyAllowed()
     end
     local backpack = lp:FindFirstChild("Backpack")
     local function isAllowed(tool)
-        return tool and tool:IsA("Tool") and self.allowedGuns[string.lower(tool.Name)]
+        return tool and tool:IsA("Tool") and (self.allowedGuns[string.lower(tool.Name)] or self.allowedGuns[normalizeName(tool.Name)])
     end
     local function findAllowed()
         for _, t in ipairs(char:GetChildren()) do
@@ -619,25 +628,26 @@ function StandController:autoBuyGuns()
     end
     self.state.voided = false
     local backpack = lp:FindFirstChild("Backpack")
+    local gunsList = env.Guns or env.Gguns or {}
     local function locateGun(lower)
         if char then
             for _, t in ipairs(char:GetChildren()) do
-                if t:IsA("Tool") and string.lower(t.Name) == lower then
+                if t:IsA("Tool") and (normalizeName(t.Name) == lower or string.lower(t.Name) == lower) then
                     return t
                 end
             end
         end
         if backpack then
             for _, t in ipairs(backpack:GetChildren()) do
-                if t:IsA("Tool") and string.lower(t.Name) == lower then
+                if t:IsA("Tool") and (normalizeName(t.Name) == lower or string.lower(t.Name) == lower) then
                     return t
                 end
             end
         end
         return nil
     end
-    for _, gunName in ipairs(env.Guns or {}) do
-        local lower = string.lower(gunName)
+    for _, gunName in ipairs(gunsList) do
+        local lower = normalizeName(gunName)
         local existing = locateGun(lower)
         if not existing then
             local model = gunShopPaths[lower]
@@ -675,7 +685,7 @@ function StandController:autoBuyAmmo(gunName)
         return
     end
     self.state.voided = false
-    local lower = gunName and string.lower(gunName)
+    local lower = gunName and normalizeName(gunName)
     if not lower then
         return
     end

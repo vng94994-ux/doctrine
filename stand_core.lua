@@ -447,10 +447,10 @@ function StandController:shootTarget(target)
             break
         end
         root.CFrame = targetRoot.CFrame * CFrame.new(0, 0, -2)
-        if gun and gun:IsA("Tool") then
+        if gun.Parent ~= char then
             gun.Parent = char
-            gun:Activate()
         end
+        gun:Activate()
         RunService.Heartbeat:Wait()
         char = getChar(lp)
         root = getRoot(char)
@@ -463,6 +463,7 @@ function StandController:knock(target)
     if not target then
         return
     end
+    self:startAimlock(target)
     self:shootTarget(target)
 end
 
@@ -470,6 +471,7 @@ function StandController:kill(target)
     if not target then
         return
     end
+    self:startAimlock(target)
     self:shootTarget(target)
     if self:isKO(target) then
         self:stomp(target)
@@ -483,7 +485,8 @@ function StandController:equipAnyAllowed()
     end
     local backpack = lp:FindFirstChild("Backpack")
     local function isAllowed(tool)
-        return tool and tool:IsA("Tool") and (self.allowedGuns[string.lower(tool.Name)] or self.allowedGuns[normalizeName(tool.Name)])
+        local lower = tool and tool:IsA("Tool") and normalizeName(tool.Name)
+        return lower and self.allowedGuns[lower]
     end
     local function findAllowed()
         for _, t in ipairs(char:GetChildren()) do
@@ -503,7 +506,7 @@ function StandController:equipAnyAllowed()
     local tool = findAllowed()
     if not tool then
         self:autoBuyGuns()
-        for _ = 1, 60 do
+        for _ = 1, 80 do
             tool = findAllowed()
             if tool then
                 break
@@ -597,7 +600,7 @@ function StandController:autoBuyMask()
     end
     local original = root.CFrame
     root.CFrame = head.CFrame + Vector3.new(0, 3, 0)
-    for _ = 1, 8 do
+    for _ = 1, 10 do
         fireclickdetector(detector)
         task.wait(0.15)
     end
@@ -618,6 +621,7 @@ function StandController:autoBuyMask()
         owned.Parent = char
     end
     self:ensureDancePlaying()
+    self:autoBuyGuns()
     if original then
         root.CFrame = original
     end
@@ -631,7 +635,7 @@ function StandController:autoBuyGuns()
     end
     self.state.voided = false
     local backpack = lp:FindFirstChild("Backpack")
-    local gunsList = env.Guns or env.Gguns or {}
+    local gunsList = env.Gguns or env.Guns or {}
     local function locateGun(lower)
         if char then
             for _, t in ipairs(char:GetChildren()) do
@@ -663,7 +667,7 @@ function StandController:autoBuyGuns()
                     fireclickdetector(detector)
                     task.wait(0.15)
                 end
-                for _ = 1, 60 do
+                for _ = 1, 80 do
                     existing = locateGun(lower)
                     if existing then
                         break

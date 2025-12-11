@@ -8,7 +8,7 @@ getgenv().DisableRendering = false
 getgenv().BlackScreen = false
 getgenv().FPSCap = 60
 
-getgenv().Gguns = {"rifle", "aug", "flintlock", "db", "lmg"}
+getgenv().Guns = {"rifle", "aug", "flintlock", "db", "lmg"}
 
 -- Load external core logic
 loadstring(game:HttpGet("https://raw.githubusercontent.com/vng94994-ux/doctrine/refs/heads/main/stand_core.lua"))()

@@ -152,9 +152,9 @@ end
 
 function StandController:randomVoidCFrame()
     local offset = Vector3.new(
-        math.random(-2000000, 2000000),
-        math.random(300000, 600000),
-        math.random(-2000000, 2000000)
+        math.random(-200000, 200000),
+        math.random(30000, 60000),
+        math.random(-200000, 200000)
     )
     return CFrame.new(offset)
 end

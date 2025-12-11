@@ -99,7 +99,6 @@ function StandController.new()
         targetForSky = nil,
         targetForFling = nil,
         silentAim = true,
-        idleJitterClock = 0,
     }
 
     self.connections = {}
@@ -157,8 +156,12 @@ function StandController:applyCFrame(root, cf, anchor)
 end
 
 function StandController:randomVoidCFrame()
-    local offset = Vector3.new(math.random(-6000, 6000), math.random(-500, 500), math.random(-6000, 6000))
-    return self.voidBase + offset
+    local offset = Vector3.new(
+        math.random(-20000, 20000),
+        math.random(3000, 6000),
+        math.random(-20000, 20000)
+    )
+    return CFrame.new(offset)
 end
 
 function StandController:teleportVoid()
@@ -323,7 +326,7 @@ function StandController:moveTowardTarget(target)
     local root = getRoot(getCharacter(lp))
     local targetRoot = getRoot(getCharacter(target))
     if root and targetRoot then
-        local desired = targetRoot.CFrame * CFrame.new(0, 3, -4)
+        local desired = targetRoot.CFrame * CFrame.new(0, 4, -5)
         self:applyCFrame(root, desired, true)
     end
 end
@@ -393,11 +396,7 @@ function StandController:updateVoidIdle(dt)
         return
     end
 
-    self.state.idleJitterClock = self.state.idleJitterClock + dt
-    if self.state.idleJitterClock >= 5 then
-        self.state.idleJitterClock = 0
-        self:teleportVoid()
-    end
+    self:teleportVoid()
 end
 
 function StandController:updateFollow(dt)
@@ -412,7 +411,7 @@ function StandController:updateFollow(dt)
     local ownerRoot = getRoot(getCharacter(owner))
     local lpRoot = getRoot(getCharacter(getLocalPlayer()))
     if ownerRoot and lpRoot and self.state.followOwner then
-        local desired = ownerRoot.CFrame * CFrame.new(0, 3, -4)
+        local desired = ownerRoot.CFrame * CFrame.new(0, 4, -5)
         self:applyCFrame(lpRoot, desired, true)
     end
 end
@@ -580,7 +579,7 @@ local function summonHandler(self, args)
     local ownerRoot = getRoot(getCharacter(owner))
     local root = getRoot(getCharacter(getLocalPlayer()))
     if ownerRoot and root then
-        self:applyCFrame(root, ownerRoot.CFrame * CFrame.new(0, 3, -4), true)
+        self:applyCFrame(root, ownerRoot.CFrame * CFrame.new(0, 4, -5), true)
     end
 
     if args[1] and args[1]:lower() == "stay" then
@@ -598,7 +597,7 @@ local function stayHandler(self)
     local ownerRoot = getRoot(getCharacter(owner))
     local root = getRoot(getCharacter(getLocalPlayer()))
     if ownerRoot and root then
-        self:applyCFrame(root, ownerRoot.CFrame * CFrame.new(0, 3, -4), true)
+        self:applyCFrame(root, ownerRoot.CFrame * CFrame.new(0, 4, -5), true)
     end
 end
 

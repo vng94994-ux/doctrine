@@ -577,14 +577,15 @@ function StandController:autoBuyMask()
         return nil
     end
     local owned = locateMask()
+    if owned and owned:IsA("Accessory") then
+        return
+    end
     if owned and owned:IsA("Tool") and owned.Parent ~= char then
         owned.Parent = char
         task.wait()
         pcall(function()
             owned:Activate()
         end)
-        return
-    elseif owned and owned:IsA("Accessory") then
         return
     end
     local model = maskShopPaths.mask
@@ -599,7 +600,7 @@ function StandController:autoBuyMask()
         fireclickdetector(detector)
         task.wait(0.15)
     end
-    for _ = 1, 30 do
+    for _ = 1, 40 do
         owned = locateMask()
         if owned then
             break

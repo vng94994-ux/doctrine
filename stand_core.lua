@@ -441,7 +441,7 @@ function StandController:shootTarget(target)
         gun, gunName = self:ensureAmmo(gun, gunName)
         if not gun then
             gun = self:equipAnyAllowed()
-            gunName = gun and string.lower(gun.Name)
+            gunName = gun and normalizeName(gun.Name)
         end
         if not gun then
             break
@@ -454,6 +454,7 @@ function StandController:shootTarget(target)
         RunService.Heartbeat:Wait()
         char = getChar(lp)
         root = getRoot(char)
+        self:ensureDancePlaying()
     end
     self:stopAimlock()
 end
@@ -616,6 +617,7 @@ function StandController:autoBuyMask()
     elseif owned and owned:IsA("Accessory") then
         owned.Parent = char
     end
+    self:ensureDancePlaying()
     if original then
         root.CFrame = original
     end
@@ -657,7 +659,7 @@ function StandController:autoBuyGuns()
             if detector and head then
                 local original = root.CFrame
                 root.CFrame = head.CFrame + Vector3.new(0, 3, 0)
-                for _ = 1, 8 do
+                for _ = 1, 10 do
                     fireclickdetector(detector)
                     task.wait(0.15)
                 end
@@ -677,6 +679,7 @@ function StandController:autoBuyGuns()
             existing.Parent = char
         end
     end
+    self:ensureDancePlaying()
 end
 
 function StandController:autoBuyAmmo(gunName)
@@ -698,15 +701,16 @@ function StandController:autoBuyAmmo(gunName)
     end
     local original = root.CFrame
     root.CFrame = head.CFrame + Vector3.new(0, 3, 0)
-    for _ = 1, 8 do
+    for _ = 1, 10 do
         fireclickdetector(detector)
         task.wait(0.15)
     end
-    task.wait(0.2)
+    task.wait(0.3)
     local refreshed = self:equipGunByName(lower)
     if refreshed and refreshed.Parent ~= char then
         refreshed.Parent = char
     end
+    self:ensureDancePlaying()
     if original then
         root.CFrame = original
     end

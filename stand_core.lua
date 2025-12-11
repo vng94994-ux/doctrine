@@ -13,7 +13,7 @@ function StandController.new()
     local self = setmetatable({}, StandController)
     self.ownerName = tostring(env.Owner or "")
     self.allowedGuns = {}
-    for _, g in ipairs(env.Gguns or {}) do
+    for _, g in ipairs(env.Guns or {}) do
         self.allowedGuns[string.lower(g)] = true
     end
 
@@ -70,6 +70,24 @@ end
 
 local function getHumanoid(char)
     return char and char:FindFirstChildOfClass("Humanoid")
+end
+
+local function resolvePlayer(query)
+    if not query or query == "" then
+        return nil
+    end
+    local lower = string.lower(query)
+    for _, plr in ipairs(Players:GetPlayers()) do
+        if string.lower(plr.Name) == lower or string.lower(plr.DisplayName) == lower then
+            return plr
+        end
+    end
+    for _, plr in ipairs(Players:GetPlayers()) do
+        if string.find(string.lower(plr.Name), lower, 1, true) or string.find(string.lower(plr.DisplayName), lower, 1, true) then
+            return plr
+        end
+    end
+    return nil
 end
 
 function StandController:announce(msg)
@@ -325,6 +343,29 @@ function StandController:equipGunByName(name)
     return tool
 end
 
+function StandController:ensureAmmo(tool, gunName)
+    if not tool then
+        return tool
+    end
+    local ammoValue
+    for _, name in ipairs({"Ammo", "AmmoCount", "Clip", "AmmoInGun"}) do
+        local v = tool:FindFirstChild(name)
+        if v and v.Value ~= nil then
+            ammoValue = v
+            break
+        end
+    end
+    if ammoValue and ammoValue.Value <= 0 then
+        self:autoBuyAmmo(gunName)
+        local refreshed = self:equipGunByName(gunName)
+        if refreshed then
+            tool = refreshed
+            gunName = string.lower(refreshed.Name)
+        end
+    end
+    return tool, gunName
+end
+
 function StandController:fireWeapon()
     local char = getChar(lp)
     if not char then
@@ -344,8 +385,13 @@ function StandController:shootTarget(target)
     local char = getChar(lp)
     local root = getRoot(char)
     local targetRoot = getRoot(getChar(target))
+    local currentGun = char and char:FindFirstChildOfClass("Tool")
+    local gunName = currentGun and string.lower(currentGun.Name)
     while targetRoot and root and not self:isKO(target) do
         root.CFrame = CFrame.lookAt(root.Position, targetRoot.Position)
+        if currentGun and gunName then
+            currentGun, gunName = self:ensureAmmo(currentGun, gunName)
+        end
         self:fireWeapon()
         RunService.Heartbeat:Wait()
         targetRoot = getRoot(getChar(target))
@@ -400,6 +446,21 @@ function StandController:equipAnyAllowed()
         end
     end
     self:autoBuyGuns()
+    if char then
+        for _, t in ipairs(char:GetChildren()) do
+            if t:IsA("Tool") and self.allowedGuns[string.lower(t.Name)] then
+                return t
+            end
+        end
+    end
+    if backpack then
+        for _, t in ipairs(backpack:GetChildren()) do
+            if t:IsA("Tool") and self.allowedGuns[string.lower(t.Name)] then
+                t.Parent = char
+                return t
+            end
+        end
+    end
     return nil
 end
 
@@ -442,6 +503,29 @@ function StandController:autoBuyMask()
     if not shop then
         return
     end
+    local function hasMask()
+        local char = getChar(lp)
+        if not char then
+            return false
+        end
+        for _, item in ipairs(char:GetChildren()) do
+            if item:IsA("Accessory") and string.find(string.lower(item.Name), "mask") then
+                return true
+            end
+        end
+        local bp = lp:FindFirstChild("Backpack")
+        if bp then
+            for _, item in ipairs(bp:GetChildren()) do
+                if item:IsA("Tool") and string.find(string.lower(item.Name), "mask") then
+                    return true
+                end
+            end
+        end
+        return false
+    end
+    if hasMask() then
+        return
+    end
     local mask
     for _, item in ipairs(shop:GetChildren()) do
         if string.find(item.Name, "Mask") and item:FindFirstChildOfClass("ClickDetector") then
@@ -455,6 +539,15 @@ function StandController:autoBuyMask()
         root.CFrame = mask:FindFirstChildWhichIsA("BasePart").CFrame + Vector3.new(0, 3, 0)
         for _ = 1, 5 do
             fireclickdetector(mask:FindFirstChildOfClass("ClickDetector"))
+        end
+        local bp = lp:FindFirstChild("Backpack")
+        if bp then
+            for _, item in ipairs(bp:GetChildren()) do
+                if item:IsA("Tool") and string.find(string.lower(item.Name), "mask") then
+                    item.Parent = char
+                    break
+                end
+            end
         end
         self:applyVoid()
     end
@@ -479,11 +572,19 @@ function StandController:autoBuyGuns()
             end
         end
         if not has then
+            for _, t in ipairs(char:GetChildren()) do
+                if t:IsA("Tool") and string.lower(t.Name) == gunName then
+                    has = true
+                    break
+                end
+            end
+        end
+        if not has then
             for _, item in ipairs(shop:GetChildren()) do
-                if string.find(string.lower(item.Name), gunName) and item:FindFirstChildOfClass("ClickDetector") then
+                if string.find(string.lower(item.Name), gunName, 1, true) and item:FindFirstChildOfClass("ClickDetector") then
                     local part = item:FindFirstChildWhichIsA("BasePart") or item
                     root.CFrame = part.CFrame + Vector3.new(0, 3, 0)
-                    for _ = 1, 6 do
+                    for _ = 1, 8 do
                         fireclickdetector(item:FindFirstChildOfClass("ClickDetector"))
                     end
                     break
@@ -508,7 +609,7 @@ function StandController:autoBuyAmmo(gunName)
         rifle = "Rifle Ammo",
         aug = "AUG Ammo",
         flintlock = "Flintlock Ammo",
-        db = "Double-Barrel",
+        db = "Double-Barrel SG Ammo",
         lmg = "LMG Ammo",
     }
     local keyword = ammoKeywords[gunName]
@@ -563,7 +664,7 @@ function StandController:initCommands()
 
     handlers["s"] = function(self, args)
         if args and args[1] then
-            local target = Players:FindFirstChild(args[1])
+            local target = resolvePlayer(args[1])
             if target then
                 self:stomp(target)
                 return
@@ -614,7 +715,7 @@ function StandController:initCommands()
     end
 
     handlers["d"] = function(self, args)
-        local target = Players:FindFirstChild(args[1])
+        local target = resolvePlayer(args[1])
         if target then
             self.state.lastTarget = target
             self:startAimlock(target)
@@ -623,14 +724,14 @@ function StandController:initCommands()
     end
 
     handlers["l"] = function(self, args)
-        local target = Players:FindFirstChild(args[1])
+        local target = resolvePlayer(args[1])
         if target then
             self.state.loopkillTarget = target
         end
     end
 
     handlers["lk"] = function(self, args)
-        local target = Players:FindFirstChild(args[1])
+        local target = resolvePlayer(args[1])
         if target then
             self.state.loopknockTarget = target
         end
@@ -667,21 +768,21 @@ function StandController:initCommands()
     end
 
     handlers["b"] = function(self, args)
-        local target = Players:FindFirstChild(args[1])
+        local target = resolvePlayer(args[1])
         if target then
             self:bring(target)
         end
     end
 
     handlers["sky"] = function(self, args)
-        local target = Players:FindFirstChild(args[1])
+        local target = resolvePlayer(args[1])
         if target then
             self:sky(target)
         end
     end
 
     handlers["fling"] = function(self, args)
-        local target = Players:FindFirstChild(args[1])
+        local target = resolvePlayer(args[1])
         if target then
             self:fling(target)
         end
@@ -701,8 +802,8 @@ function StandController:initCommands()
     end
 
     handlers["t"] = function(self, args)
-        local p1 = Players:FindFirstChild(args[1] or "")
-        local p2 = Players:FindFirstChild(args[2] or "")
+        local p1 = resolvePlayer(args[1] or "")
+        local p2 = resolvePlayer(args[2] or "")
         if p1 and p2 then
             local r2 = getRoot(getChar(p2))
             if r2 then
@@ -725,7 +826,7 @@ function StandController:initCommands()
     end
 
     handlers["assist"] = function(self, args)
-        local target = Players:FindFirstChild(args[1] or "")
+        local target = resolvePlayer(args[1] or "")
         if target then
             self.state.assistTargets[string.lower(target.Name)] = target
         end
@@ -791,7 +892,7 @@ function StandController:connectChat()
     end
     self.chatConnections = {}
     local function hook(plr)
-        if plr and plr.Name == self.ownerName then
+        if plr and string.lower(plr.Name) == string.lower(self.ownerName) then
             local conn = plr.Chatted:Connect(function(msg)
                 self:parseChat(msg, plr.Name)
             end)
@@ -800,7 +901,7 @@ function StandController:connectChat()
     end
     hook(Players:FindFirstChild(self.ownerName))
     table.insert(self.chatConnections, Players.PlayerAdded:Connect(function(plr)
-        if plr.Name == self.ownerName then
+        if string.lower(plr.Name) == string.lower(self.ownerName) then
             hook(plr)
         end
     end))
@@ -814,6 +915,14 @@ function StandController:start()
     self:connectChat()
     self:loopSystems()
     self:autoBuyGuns()
+    table.insert(self.chatConnections, lp.CharacterAdded:Connect(function(char)
+        char:WaitForChild("HumanoidRootPart", 5)
+        self:ensureDancePlaying()
+        self:autoBuyGuns()
+        if self.state.maskEnabled then
+            self:autoBuyMask()
+        end
+    end))
 end
 
 local controller = StandController.new()

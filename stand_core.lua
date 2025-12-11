@@ -6,6 +6,63 @@ local RunService = game:GetService("RunService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local lp = Players.LocalPlayer
+
+local function normalizeName(name)
+    return string.lower((name or ""):gsub("[^%w]", ""))
+end
+
+local gunShopPaths = {
+    rifle = workspace.Ignored.Shop["[Rifle] - $1694"],
+    aug = workspace.Ignored.Shop["[AUG] - $2131"],
+    flint = workspace.Ignored.Shop["[Flintlock] - $1421"],
+    flintlock = workspace.Ignored.Shop["[Flintlock] - $1421"],
+    db = workspace.Ignored.Shop["[Double-Barrel SG] - $1475"],
+    lmg = workspace.Ignored.Shop["[LMG] - $4098"],
+}
+
+local ammoShopPaths = {
+    rifle = workspace.Ignored.Shop["5 [Rifle Ammo] - $273"],
+    aug = workspace.Ignored.Shop["90 [AUG Ammo] - $87"],
+    flint = workspace.Ignored.Shop["6 [Flintlock Ammo] - $163"],
+    flintlock = workspace.Ignored.Shop["6 [Flintlock Ammo] - $163"],
+    db = workspace.Ignored.Shop["18 [Double-Barrel SG Ammo] - $55"],
+    lmg = workspace.Ignored.Shop["200 [LMG Ammo] - $328"],
+}
+
+local maskShopPaths = {
+    mask = workspace.Ignored.Shop["[Breathing Mask] - $66"],
+}
+
+local function getChar(plr)
+    return plr and plr.Character
+end
+
+local function getRoot(char)
+    return char and char:FindFirstChild("HumanoidRootPart")
+end
+
+local function getHumanoid(char)
+    return char and char:FindFirstChildOfClass("Humanoid")
+end
+
+local function resolvePlayer(query)
+    if not query or query == "" then
+        return nil
+    end
+    local lower = string.lower(query)
+    for _, plr in ipairs(Players:GetPlayers()) do
+        if string.lower(plr.Name) == lower or string.lower(plr.DisplayName) == lower then
+            return plr
+        end
+    end
+    for _, plr in ipairs(Players:GetPlayers()) do
+        if string.find(string.lower(plr.Name), lower, 1, true) or string.find(string.lower(plr.DisplayName), lower, 1, true) then
+            return plr
+        end
+    end
+    return nil
+end
+
 local StandController = {}
 StandController.__index = StandController
 
@@ -14,9 +71,8 @@ function StandController.new()
     self.ownerName = tostring(env.Owner or "")
     self.allowedGuns = {}
     for _, g in ipairs(env.Guns or env.Gguns or {}) do
-        local lower = string.lower(g)
+        local lower = normalizeName(g)
         self.allowedGuns[lower] = true
-        self.allowedGuns[normalizeName(lower)] = true
     end
 
     self.state = {
@@ -60,75 +116,6 @@ function StandController.new()
     self:initializeAimlock()
 
     return self
-end
-
-local function getChar(plr)
-    return plr and plr.Character
-end
-
-local function getRoot(char)
-    return char and char:FindFirstChild("HumanoidRootPart")
-end
-
-local function getHumanoid(char)
-    return char and char:FindFirstChildOfClass("Humanoid")
-end
-
-local gunShopPaths = {
-    rifle = workspace.Ignored.Shop["[Rifle] - $1694"],
-    aug = workspace.Ignored.Shop["[AUG] - $2131"],
-    flint = workspace.Ignored.Shop["[Flintlock] - $1421"],
-    flintlock = workspace.Ignored.Shop["[Flintlock] - $1421"],
-    db = workspace.Ignored.Shop["[Double-Barrel SG] - $1475"],
-    lmg = workspace.Ignored.Shop["[LMG] - $4098"],
-}
-
-local ammoShopPaths = {
-    rifle = workspace.Ignored.Shop["5 [Rifle Ammo] - $273"],
-    aug = workspace.Ignored.Shop["90 [AUG Ammo] - $87"],
-    flint = workspace.Ignored.Shop["6 [Flintlock Ammo] - $163"],
-    flintlock = workspace.Ignored.Shop["6 [Flintlock Ammo] - $163"],
-    db = workspace.Ignored.Shop["18 [Double-Barrel SG Ammo] - $55"],
-    lmg = workspace.Ignored.Shop["200 [LMG Ammo] - $328"],
-}
-
-local maskShopPaths = {
-    mask = workspace.Ignored.Shop["[Breathing Mask] - $66"],
-}
-
-local function normalizeName(name)
-    return string.lower((name or ""):gsub("[^%w]", ""))
-end
-
-local function findBasePart(model)
-    if not model then
-        return nil
-    end
-    if model:IsA("BasePart") then
-        return model
-    end
-    if model.PrimaryPart then
-        return model.PrimaryPart
-    end
-    return model:FindFirstChildWhichIsA("BasePart", true)
-end
-
-local function resolvePlayer(query)
-    if not query or query == "" then
-        return nil
-    end
-    local lower = string.lower(query)
-    for _, plr in ipairs(Players:GetPlayers()) do
-        if string.lower(plr.Name) == lower or string.lower(plr.DisplayName) == lower then
-            return plr
-        end
-    end
-    for _, plr in ipairs(Players:GetPlayers()) do
-        if string.find(string.lower(plr.Name), lower, 1, true) or string.find(string.lower(plr.DisplayName), lower, 1, true) then
-            return plr
-        end
-    end
-    return nil
 end
 
 function StandController:announce(msg)
@@ -357,30 +344,31 @@ function StandController:equipGunByName(name)
     if not name then
         return nil
     end
-    local lower = string.lower(name)
-    local normalized = normalizeName(lower)
-    if not self.allowedGuns[lower] and not self.allowedGuns[normalized] then
+    local lower = normalizeName(name)
+    if not self.allowedGuns[lower] then
         return nil
     end
     local char = getChar(lp)
     local backpack = lp:FindFirstChild("Backpack")
-    local tool = nil
-    if char then
-        for _, t in ipairs(char:GetChildren()) do
-            if t:IsA("Tool") and (self.allowedGuns[string.lower(t.Name)] or self.allowedGuns[normalizeName(t.Name)]) then
-                return t
+    local function find()
+        if char then
+            for _, t in ipairs(char:GetChildren()) do
+                if t:IsA("Tool") and self.allowedGuns[normalizeName(t.Name)] then
+                    return t
+                end
             end
         end
-    end
-    if backpack then
-        for _, t in ipairs(backpack:GetChildren()) do
-            if t:IsA("Tool") and (self.allowedGuns[string.lower(t.Name)] or self.allowedGuns[normalizeName(t.Name)]) then
-                tool = t
-                break
+        if backpack then
+            for _, t in ipairs(backpack:GetChildren()) do
+                if t:IsA("Tool") and self.allowedGuns[normalizeName(t.Name)] then
+                    return t
+                end
             end
         end
+        return nil
     end
-    if tool and char then
+    local tool = find()
+    if tool and char and tool.Parent ~= char then
         tool.Parent = char
     end
     return tool
@@ -388,7 +376,7 @@ end
 
 function StandController:ensureAmmo(tool, gunName)
     if not tool then
-        return tool
+        return tool, gunName
     end
     local ammoValue
     for _, name in ipairs({"Ammo", "AmmoCount", "Clip", "AmmoInGun"}) do
@@ -403,7 +391,7 @@ function StandController:ensureAmmo(tool, gunName)
         local refreshed = self:equipGunByName(gunName)
         if refreshed then
             tool = refreshed
-            gunName = string.lower(refreshed.Name)
+            gunName = normalizeName(refreshed.Name)
         end
     end
     return tool, gunName
@@ -441,7 +429,7 @@ function StandController:shootTarget(target)
         gun, gunName = self:ensureAmmo(gun, gunName)
         if not gun then
             gun = self:equipAnyAllowed()
-            gunName = gun and normalizeName(gun.Name)
+            gunName = gun and normalizeName(gun and gun.Name)
         end
         if not gun then
             break
@@ -526,9 +514,8 @@ function StandController:stomp(target)
     if root and targetRoot then
         root.CFrame = targetRoot.CFrame * CFrame.new(0, 0, -2)
     end
-    local mainEvent = self.mainEvent
-    if mainEvent then
-        mainEvent:FireServer("Stomp")
+    if self.mainEvent then
+        self.mainEvent:FireServer("Stomp")
     end
 end
 
@@ -560,7 +547,6 @@ function StandController:autoBuyMask()
     if not char or not root then
         return
     end
-    self.state.voided = false
     local function locateMask()
         for _, item in ipairs(char:GetChildren()) do
             if item:IsA("Accessory") and string.find(string.lower(item.Name), "mask") then
@@ -584,14 +570,6 @@ function StandController:autoBuyMask()
     if owned and owned:IsA("Accessory") then
         return
     end
-    if owned and owned:IsA("Tool") and owned.Parent ~= char then
-        owned.Parent = char
-        task.wait()
-        pcall(function()
-            owned:Activate()
-        end)
-        return
-    end
     local model = maskShopPaths.mask
     local head = model and model:FindFirstChild("Head")
     local detector = model and model:FindFirstChildOfClass("ClickDetector")
@@ -600,11 +578,11 @@ function StandController:autoBuyMask()
     end
     local original = root.CFrame
     root.CFrame = head.CFrame + Vector3.new(0, 3, 0)
-    for _ = 1, 10 do
+    for _ = 1, 8 do
         fireclickdetector(detector)
         task.wait(0.15)
     end
-    for _ = 1, 40 do
+    for _ = 1, 30 do
         owned = locateMask()
         if owned then
             break
@@ -617,11 +595,7 @@ function StandController:autoBuyMask()
         pcall(function()
             owned:Activate()
         end)
-    elseif owned and owned:IsA("Accessory") then
-        owned.Parent = char
     end
-    self:ensureDancePlaying()
-    self:autoBuyGuns()
     if original then
         root.CFrame = original
     end
@@ -635,52 +609,53 @@ function StandController:autoBuyGuns()
     end
     self.state.voided = false
     local backpack = lp:FindFirstChild("Backpack")
-    local gunsList = env.Gguns or env.Guns or {}
     local function locateGun(lower)
         if char then
             for _, t in ipairs(char:GetChildren()) do
-                if t:IsA("Tool") and (normalizeName(t.Name) == lower or string.lower(t.Name) == lower) then
+                if t:IsA("Tool") and normalizeName(t.Name) == lower then
                     return t
                 end
             end
         end
         if backpack then
             for _, t in ipairs(backpack:GetChildren()) do
-                if t:IsA("Tool") and (normalizeName(t.Name) == lower or string.lower(t.Name) == lower) then
+                if t:IsA("Tool") and normalizeName(t.Name) == lower then
                     return t
                 end
             end
         end
         return nil
     end
-    for _, gunName in ipairs(gunsList) do
+    for _, gunName in ipairs(env.Guns or env.Gguns or {}) do
         local lower = normalizeName(gunName)
-        local existing = locateGun(lower)
-        if not existing then
-            local model = gunShopPaths[lower]
-            local head = model and model:FindFirstChild("Head")
-            local detector = model and model:FindFirstChildOfClass("ClickDetector")
-            if detector and head then
-                local original = root.CFrame
-                root.CFrame = head.CFrame + Vector3.new(0, 3, 0)
-                for _ = 1, 10 do
-                    fireclickdetector(detector)
-                    task.wait(0.15)
-                end
-                for _ = 1, 80 do
-                    existing = locateGun(lower)
-                    if existing then
-                        break
+        if self.allowedGuns[lower] then
+            local existing = locateGun(lower)
+            if not existing then
+                local model = gunShopPaths[lower]
+                local head = model and model:FindFirstChild("Head")
+                local detector = model and model:FindFirstChildOfClass("ClickDetector")
+                if detector and head then
+                    local original = root.CFrame
+                    root.CFrame = head.CFrame + Vector3.new(0, 3, 0)
+                    for _ = 1, 10 do
+                        fireclickdetector(detector)
+                        task.wait(0.15)
                     end
-                    task.wait(0.1)
-                end
-                if original then
-                    root.CFrame = original
+                    for _ = 1, 60 do
+                        existing = locateGun(lower)
+                        if existing then
+                            break
+                        end
+                        task.wait(0.1)
+                    end
+                    if original then
+                        root.CFrame = original
+                    end
                 end
             end
-        end
-        if existing and existing.Parent ~= char then
-            existing.Parent = char
+            if existing and existing.Parent ~= char then
+                existing.Parent = char
+            end
         end
     end
     self:ensureDancePlaying()
@@ -793,6 +768,7 @@ function StandController:initCommands()
         if args[1] and args[1]:lower() == "on" then
             self.state.maskEnabled = true
             self:autoBuyMask()
+            self:autoBuyGuns()
         else
             self.state.maskEnabled = false
         end

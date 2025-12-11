@@ -194,7 +194,7 @@ function StandController:ensureDancePlaying()
         return
     end
     local animator = hum:FindFirstChildOfClass("Animator") or Instance.new("Animator", hum)
-    if not self.animationTrack then
+    if not self.animationTrack or self.animationTrack.Parent ~= animator then
         local anim = Instance.new("Animation")
         anim.AnimationId = self.danceAnimationId
         self.animationTrack = animator:LoadAnimation(anim)
@@ -285,8 +285,7 @@ function StandController:getNearestTarget()
     local best = math.min(unpack(diffs))
     if best > self.aimRadius then
         return nil
-    end
-    for _, v in pairs(candidates) do
+    end    for _, v in pairs(candidates) do
         if v.diff == best then
             return v.plr
         end
@@ -380,7 +379,7 @@ end
 
 function StandController:ensureAmmo(tool, gunName)
     if not tool then
-        return tool
+        return tool, gunName
     end
     local ammoValue
     for _, name in ipairs({"Ammo", "AmmoCount", "Clip", "AmmoInGun"}) do
@@ -420,6 +419,7 @@ function StandController:shootTarget(target)
     if not gun then
         return
     end
+    self.state.voided = false
     self:startAimlock(target)
     local char = getChar(lp)
     local root = getRoot(char)
@@ -437,7 +437,7 @@ function StandController:shootTarget(target)
         if not gun then
             break
         end
-        root.CFrame = targetRoot.CFrame
+        root.CFrame = targetRoot.CFrame * CFrame.new(0, 0, -2)
         if gun and gun:IsA("Tool") then
             gun.Parent = char
             gun:Activate()
@@ -453,17 +453,11 @@ function StandController:knock(target)
     if not target then
         return
     end
-    if not self:equipAnyAllowed() then
-        return
-    end
     self:shootTarget(target)
 end
 
 function StandController:kill(target)
     if not target then
-        return
-    end
-    if not self:equipAnyAllowed() then
         return
     end
     self:shootTarget(target)
@@ -553,6 +547,7 @@ function StandController:autoBuyMask()
     if not char or not root then
         return
     end
+    self.state.voided = false
     local function locateMask()
         for _, item in ipairs(char:GetChildren()) do
             if item:IsA("Accessory") and string.find(string.lower(item.Name), "mask") then
@@ -608,6 +603,8 @@ function StandController:autoBuyMask()
         pcall(function()
             owned:Activate()
         end)
+    elseif owned and owned:IsA("Accessory") then
+        owned.Parent = char
     end
     if original then
         root.CFrame = original
@@ -620,6 +617,7 @@ function StandController:autoBuyGuns()
     if not char or not root then
         return
     end
+    self.state.voided = false
     local backpack = lp:FindFirstChild("Backpack")
     local function locateGun(lower)
         if char then
@@ -676,6 +674,7 @@ function StandController:autoBuyAmmo(gunName)
     if not char or not root then
         return
     end
+    self.state.voided = false
     local lower = gunName and string.lower(gunName)
     if not lower then
         return

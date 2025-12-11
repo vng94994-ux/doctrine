@@ -164,9 +164,9 @@ function StandController:applyVoid()
     local root = getRoot(char)
     if root then
         root.CFrame = CFrame.new(
-            math.random(-5000000, 5000000),
+            math.random(-500000, 500000),
             math.random(100000, 300000),
-            math.random(-5000000, 5000000)
+            math.random(-500000, 500000)
         )
     end
     self.state.voided = true

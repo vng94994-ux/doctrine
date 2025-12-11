@@ -101,6 +101,14 @@ function StandController.new()
         silentAim = true,
     }
 
+    self.aimlockEnabled = true
+    self.aimlockActive = false
+    self.aimlockTarget = nil
+    self.aimPart = "HumanoidRootPart"
+    self.predictionVelocity = 6
+    self.aimRadius = 30
+    self.teamCheck = false
+
     self.connections = {}
     self.voidBase = CFrame.new(0, 15000, 0)
     self.mainEvent = replicatedStorage():FindFirstChild("MainEvent")
@@ -109,6 +117,16 @@ function StandController.new()
     self.actions = {}
 
     return self
+end
+
+function StandController:initializeAimlock()
+    self.aimlockEnabled = true
+    self.aimlockActive = false
+    self.aimlockTarget = nil
+    self.aimPart = env.AimPart or "HumanoidRootPart"
+    self.predictionVelocity = env.PredictionVelocity or 6
+    self.aimRadius = env.AimRadius or 30
+    self.teamCheck = env.TeamCheck or false
 end
 
 function StandController:announce(text)
@@ -148,13 +166,14 @@ function StandController:applyCFrame(root, cf)
     end
 
     root.CFrame = cf
+    self:ensureDancePlaying()
 end
 
 function StandController:randomVoidCFrame()
     local offset = Vector3.new(
-        math.random(-200000, 200000),
-        math.random(30000, 60000),
-        math.random(-200000, 200000)
+        math.random(-40000, 40000),
+        math.random(3000, 6000),
+        math.random(-40000, 40000)
     )
     return CFrame.new(offset)
 end
@@ -177,7 +196,10 @@ function StandController:preloadAnimations()
     if self.danceAnimationId then
         local anim = Instance.new("Animation")
         anim.AnimationId = self.danceAnimationId
-        local track = humanoid:LoadAnimation(anim)
+        local animator = humanoid:FindFirstChildOfClass("Animator") or Instance.new("Animator", humanoid)
+        local track = animator:LoadAnimation(anim)
+        track.Looped = true
+        track.Priority = Enum.AnimationPriority.Action
         track:Stop()
         self.cachedDanceTrack = track
     end
@@ -283,9 +305,123 @@ function StandController:aimAtTarget(target)
     end
 
     root.CFrame = CFrame.lookAt(root.Position, focus)
+end
+
+function StandController:getAimPartFromCharacter(char)
+    if not char then
+        return nil
+    end
+    local part = char:FindFirstChild(self.aimPart)
+    if part then
+        return part
+    end
+    return getHumanoid(char) and getHumanoid(char).RootPart or getRoot(char)
+end
+
+function StandController:getNearestTarget()
+    local localPlayer = getLocalPlayer()
     local cam = workspace.CurrentCamera
-    if cam then
-        cam.CFrame = CFrame.new(cam.CFrame.Position, focus)
+    local mouse = localPlayer:GetMouse()
+    local candidates, meta, diffs = {}, {}, {}
+
+    for _, plr in pairs(players():GetPlayers()) do
+        if plr ~= localPlayer then
+            table.insert(candidates, plr)
+        end
+    end
+
+    for idx, plr in pairs(candidates) do
+        local char = getCharacter(plr)
+        local head = char and char:FindFirstChild("Head")
+        if char and head then
+            local include
+            if self.teamCheck and plr.Team ~= localPlayer.Team then
+                include = true
+            elseif not self.teamCheck and plr.Team == localPlayer.Team then
+                include = true
+            end
+
+            if include then
+                local magnitude = (head.Position - cam.CFrame.Position).Magnitude
+                local ray = Ray.new(cam.CFrame.Position, (mouse.Hit.p - cam.CFrame.Position).Unit * magnitude)
+                local _, hitPos = workspace:FindPartOnRay(ray, workspace)
+                local diff = math.floor((hitPos - head.Position).Magnitude)
+                meta[plr.Name .. idx] = { dist = magnitude, plr = plr, diff = diff }
+                table.insert(diffs, diff)
+            end
+        end
+    end
+
+    if #diffs == 0 then
+        return nil
+    end
+
+    local best = math.floor(math.min(unpack(diffs)))
+    if best > self.aimRadius then
+        return nil
+    end
+
+    for _, data in pairs(meta) do
+        if data.diff == best then
+            return data.plr
+        end
+    end
+
+    return nil
+end
+
+function StandController:startAimlock(target)
+    if not self.aimlockEnabled then
+        return
+    end
+    if not target then
+        return self:stopAimlock()
+    end
+
+    self.aimlockTarget = target
+    self.aimlockActive = true
+end
+
+function StandController:stopAimlock()
+    self.aimlockActive = false
+    self.aimlockTarget = nil
+end
+
+function StandController:updateAimlock()
+    if not self.aimlockActive or self.state.voided then
+        return
+    end
+
+    local lpChar = getCharacter(getLocalPlayer())
+    local root = getRoot(lpChar)
+    if not root then
+        return
+    end
+
+    local target = self.aimlockTarget
+    if typeof(target) == "string" then
+        target = players():FindFirstChild(target)
+    end
+    if not (target and target.Character) then
+        return self:stopAimlock()
+    end
+
+    local aimPart = self:getAimPartFromCharacter(target.Character)
+    if not aimPart then
+        return self:stopAimlock()
+    end
+
+    local predicted = aimPart.Position
+    if aimPart:IsA("BasePart") and self.predictionVelocity and self.predictionVelocity ~= 0 then
+        predicted = aimPart.Position + (aimPart.Velocity / self.predictionVelocity)
+    end
+
+    root.CFrame = CFrame.lookAt(root.Position, predicted)
+
+    local tool = getHumanoid(lpChar) and getHumanoid(lpChar):FindFirstChildOfClass("Tool")
+    local handle = tool and (tool:FindFirstChild("Handle") or tool:FindFirstChildWhichIsA("BasePart"))
+    if handle then
+        handle.CFrame = CFrame.lookAt(handle.Position, predicted)
     end
 end
 
@@ -321,8 +457,8 @@ function StandController:moveTowardTarget(target)
     local root = getRoot(getCharacter(lp))
     local targetRoot = getRoot(getCharacter(target))
     if root and targetRoot then
-        local desired = targetRoot.CFrame * CFrame.new(0, 4, -5)
-        root.CFrame = desired
+        local desired = targetRoot.Position + Vector3.new(0, 4, -5)
+        root.AssemblyLinearVelocity = (desired - root.Position) * 0.20
     end
 end
 
@@ -364,7 +500,8 @@ function StandController:forceDance()
 
     local anim = Instance.new("Animation")
     anim.AnimationId = self.danceAnimationId
-    local track = humanoid:LoadAnimation(anim)
+    local animator = humanoid:FindFirstChildOfClass("Animator") or Instance.new("Animator", humanoid)
+    local track = animator:LoadAnimation(anim)
     track.Priority = Enum.AnimationPriority.Action
     track.Looped = true
     track:Play()
@@ -393,7 +530,9 @@ function StandController:updateVoidIdle(dt)
         return
     end
 
-    self:teleportVoid()
+    for _ = 1, 3 do
+        self:teleportVoid()
+    end
 end
 
 function StandController:updateFollow(dt)
@@ -408,8 +547,10 @@ function StandController:updateFollow(dt)
     local ownerRoot = getRoot(getCharacter(owner))
     local lpRoot = getRoot(getCharacter(getLocalPlayer()))
     if ownerRoot and lpRoot and self.state.followOwner then
-        local targetCF = ownerRoot.CFrame * CFrame.new(0, 4, -5)
-        lpRoot.CFrame = lpRoot.CFrame:Lerp(targetCF, 0.35)
+        local followOffset = Vector3.new(0, 4, -5)
+        local desired = ownerRoot.CFrame * CFrame.new(followOffset)
+        local velocity = (desired.Position - lpRoot.Position) * 0.15
+        lpRoot.AssemblyLinearVelocity = velocity
     end
 end
 
@@ -432,12 +573,20 @@ function StandController:updateAura()
     if not self.state.aura then
         return
     end
+    local aimed = false
     for _, target in ipairs(players():GetPlayers()) do
         if target ~= getLocalPlayer() and stringLower(target.Name) ~= stringLower(self.owner) then
             if not self.state.auraWhitelist[target.Name:lower()] and not self.state.whitelist[target.Name:lower()] then
+                if not aimed then
+                    self:startAimlock(target)
+                    aimed = true
+                end
                 self:shootTarget(target)
             end
         end
+    end
+    if not aimed then
+        self:stopAimlock()
     end
 end
 
@@ -448,34 +597,49 @@ function StandController:updateCombat()
     if self.state.loopknockTarget then
         local target = players():FindFirstChild(self.state.loopknockTarget)
         if target then
+            self:startAimlock(target)
             if self:knockTarget(target) then
                 self.state.loopknockTarget = nil
+                self:stopAimlock()
             end
+        else
+            self:stopAimlock()
         end
     end
 
     if self.state.loopkillTarget then
         local target = players():FindFirstChild(self.state.loopkillTarget)
         if target then
+            self:startAimlock(target)
             if self:knockTarget(target) then
                 self:stompTarget(target)
                 self:forceDance()
                 self.state.loopkillTarget = nil
+                self:stopAimlock()
             end
+        else
+            self:stopAimlock()
         end
     end
 
-    if self.state.akill and self.state.lastTarget then
-        local target = players():FindFirstChild(self.state.lastTarget)
-        if target and self:knockTarget(target) then
-            self:stompTarget(target)
-            self:forceDance()
+    if self.state.akill then
+        local target = self:getNearestTarget()
+        if target then
+            self.state.lastTarget = target.Name
+            self:startAimlock(target)
+            if self:knockTarget(target) then
+                self:stompTarget(target)
+                self:forceDance()
+            end
+        else
+            self:stopAimlock()
         end
     end
 end
 
 function StandController:update(dt)
     self:ensureDancePlaying()
+    self:updateAimlock()
     self:updateVoidIdle(dt)
     self:updateFollow(dt)
     self:updateAssist()
@@ -577,6 +741,7 @@ local function summonHandler(self, args)
     local root = getRoot(getCharacter(getLocalPlayer()))
     if ownerRoot and root then
         root.CFrame = ownerRoot.CFrame * CFrame.new(0, 4, -5)
+        self:ensureDancePlaying()
     end
 
     if args[1] and args[1]:lower() == "stay" then
@@ -595,6 +760,7 @@ local function stayHandler(self)
     local root = getRoot(getCharacter(getLocalPlayer()))
     if ownerRoot and root then
         root.CFrame = ownerRoot.CFrame * CFrame.new(0, 4, -5)
+        self:ensureDancePlaying()
     end
 end
 
@@ -612,6 +778,7 @@ local function voidHandler(self)
     self.state.targetForSky = nil
     self.state.targetForFling = nil
     self.state.voided = true
+    self:stopAimlock()
     self:teleportVoid()
 end
 
@@ -624,6 +791,7 @@ local function repairHandler(self)
     self.state.followOwner = false
     self.state.stay = false
     self.state.voided = true
+    self:stopAimlock()
     self:teleportVoid()
 end
 
@@ -661,6 +829,7 @@ local function knockHandler(self, args)
     if target then
         self.state.lastTarget = target.Name
         self.state.loopknockTarget = target.Name
+        self:startAimlock(target)
     end
 end
 
@@ -689,6 +858,7 @@ local function loopkillHandler(self, args)
     if target then
         self.state.loopkillTarget = target.Name
         self.state.lastTarget = target.Name
+        self:startAimlock(target)
     end
 end
 
@@ -697,19 +867,17 @@ local function loopknockHandler(self, args)
     if target then
         self.state.loopknockTarget = target.Name
         self.state.lastTarget = target.Name
+        self:startAimlock(target)
     end
 end
 
 local function akillHandler(self, args)
     local state = args[1] and args[1]:lower()
     if state == "on" then
-        if self.state.lastTarget then
-            self.state.akill = true
-        else
-            warnf("No target locked for akill")
-        end
+        self.state.akill = true
     elseif state == "off" then
         self.state.akill = false
+        self:stopAimlock()
     else
         warnf("Usage: .akill on/off")
     end
@@ -743,8 +911,13 @@ local function auraHandler(self, args)
     local state = args[1] and args[1]:lower()
     if state == "on" then
         self.state.aura = true
+        local target = self:getNearestTarget()
+        if target then
+            self:startAimlock(target)
+        end
     elseif state == "off" then
         self.state.aura = false
+        self:stopAimlock()
     else
         warnf("Usage: .a on/off")
     end
@@ -921,6 +1094,7 @@ function StandController:start()
 
     self:preloadAnimations()
     self:forceDance()
+    self:initializeAimlock()
     self:autoAcquireGuns()
     self:equipAllowedTool()
     self:teleportVoid()

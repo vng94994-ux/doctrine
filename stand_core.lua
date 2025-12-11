@@ -421,23 +421,26 @@ function StandController:shootTarget(target)
     self:startAimlock(target)
     local char = getChar(lp)
     local root = getRoot(char)
-    local targetRoot = getRoot(getChar(target))
     local gunName = gun and string.lower(gun.Name)
-    while targetRoot and root and not self:isKO(target) do
-        local desiredPos = targetRoot.Position + targetRoot.CFrame.LookVector * -2 + Vector3.new(0, 2, 0)
-        root.CFrame = CFrame.lookAt(desiredPos, targetRoot.Position)
-        if gun and gunName then
-            gun, gunName = self:ensureAmmo(gun, gunName)
+    while root and target and target.Character and not self:isKO(target) do
+        local targetRoot = getRoot(target.Character)
+        if not targetRoot then
+            break
         end
+        gun, gunName = self:ensureAmmo(gun, gunName)
         if not gun then
             gun = self:equipAnyAllowed()
             gunName = gun and string.lower(gun.Name)
         end
-        if gun then
-            gun:Activate()
+        if not gun then
+            break
         end
+        local desired = targetRoot.Position + targetRoot.CFrame.LookVector * -2 + Vector3.new(0, 2, 0)
+        root.CFrame = CFrame.new(desired, targetRoot.Position)
+        gun:Activate()
         RunService.Heartbeat:Wait()
-        targetRoot = getRoot(getChar(target))
+        char = getChar(lp)
+        root = getRoot(char)
     end
     self:stopAimlock()
 end
@@ -492,7 +495,7 @@ function StandController:equipAnyAllowed()
     local tool = findAllowed()
     if not tool then
         self:autoBuyGuns()
-        for _ = 1, 20 do
+        for _ = 1, 60 do
             tool = findAllowed()
             if tool then
                 break
@@ -546,23 +549,34 @@ function StandController:autoBuyMask()
     if not char or not root then
         return
     end
-    local function hasMask()
+    local function locateMask()
         for _, item in ipairs(char:GetChildren()) do
             if item:IsA("Accessory") and string.find(string.lower(item.Name), "mask") then
-                return true
+                return item
+            end
+            if item:IsA("Tool") and string.find(string.lower(item.Name), "mask") then
+                return item
             end
         end
         local bp = lp:FindFirstChild("Backpack")
         if bp then
             for _, item in ipairs(bp:GetChildren()) do
                 if item:IsA("Tool") and string.find(string.lower(item.Name), "mask") then
-                    return true
+                    return item
                 end
             end
         end
-        return false
+        return nil
     end
-    if hasMask() then
+    local owned = locateMask()
+    if owned and owned:IsA("Tool") and owned.Parent ~= char then
+        owned.Parent = char
+        task.wait()
+        pcall(function()
+            owned:Activate()
+        end)
+        return
+    elseif owned and owned:IsA("Accessory") then
         return
     end
     local model = maskShopPaths.mask
@@ -571,28 +585,30 @@ function StandController:autoBuyMask()
     if not (detector and part) then
         return
     end
+    local original = root.CFrame
     root.CFrame = part.CFrame + Vector3.new(0, 3, 0)
-    for _ = 1, 6 do
+    for _ = 1, 8 do
         fireclickdetector(detector)
         task.wait(0.15)
     end
-    local bp = lp:FindFirstChild("Backpack")
-    if bp then
-        for _ = 1, 20 do
-            for _, item in ipairs(bp:GetChildren()) do
-                if item:IsA("Tool") and string.find(string.lower(item.Name), "mask") then
-                    item.Parent = char
-                    task.wait()
-                    if item.Parent == char then
-                        pcall(function()
-                            item:Activate()
-                        end)
-                    end
-                    return
-                end
-            end
-            task.wait(0.1)
+    for _ = 1, 30 do
+        owned = locateMask()
+        if owned then
+            break
         end
+        task.wait(0.1)
+    end
+    if owned then
+        if owned:IsA("Tool") then
+            owned.Parent = char
+            task.wait()
+            pcall(function()
+                owned:Activate()
+            end)
+        end
+    end
+    if original then
+        root.CFrame = original
     end
 end
 
@@ -622,28 +638,32 @@ function StandController:autoBuyGuns()
     end
     for _, gunName in ipairs(env.Guns or {}) do
         local lower = string.lower(gunName)
-        local tool = locateGun(lower)
-        if not tool then
+        local existing = locateGun(lower)
+        if not existing then
             local model = gunShopPaths[lower]
             local detector = model and model:FindFirstChildOfClass("ClickDetector")
             local part = findBasePart(model)
             if detector and part then
+                local original = root.CFrame
                 root.CFrame = part.CFrame + Vector3.new(0, 3, 0)
                 for _ = 1, 10 do
                     fireclickdetector(detector)
                     task.wait(0.15)
                 end
-                for _ = 1, 50 do
-                    tool = locateGun(lower)
-                    if tool then
+                for _ = 1, 60 do
+                    existing = locateGun(lower)
+                    if existing then
                         break
                     end
                     task.wait(0.1)
                 end
+                if original then
+                    root.CFrame = original
+                end
             end
         end
-        if tool and char then
-            tool.Parent = char
+        if existing and existing.Parent ~= char then
+            existing.Parent = char
         end
     end
 end
@@ -664,14 +684,19 @@ function StandController:autoBuyAmmo(gunName)
     if not (detector and part) then
         return
     end
+    local original = root.CFrame
     root.CFrame = part.CFrame + Vector3.new(0, 3, 0)
     for _ = 1, 8 do
         fireclickdetector(detector)
         task.wait(0.15)
     end
+    task.wait(0.2)
     local refreshed = self:equipGunByName(lower)
     if refreshed and refreshed.Parent ~= char then
         refreshed.Parent = char
+    end
+    if original then
+        root.CFrame = original
     end
 end
 

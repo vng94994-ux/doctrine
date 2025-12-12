@@ -94,23 +94,32 @@ end
 
 function Aiming.GetClosestPlayerToCursor()
     local closest, distance = nil, Aiming.FOV * 3
+    local chosenPart = nil
     for _, plr in ipairs(Players:GetPlayers()) do
         if canSelect(plr) and plr.Character then
-            local part = getClosestPart(plr.Character)
-            if part then
-                local pos, onScreen = Workspace.CurrentCamera:WorldToScreenPoint(part.Position)
-                if onScreen then
-                    local diff = (Vector2.new(pos.X, pos.Y) - Vector2.new(Mouse.X, Mouse.Y)).Magnitude
-                    if diff <= distance and isVisible(part) then
-                        closest = plr
-                        distance = diff
+            local bestPart, bestDiff = nil, distance
+            for _, name in ipairs({ "Head", "UpperTorso", "HumanoidRootPart" }) do
+                local part = plr.Character:FindFirstChild(name)
+                if part then
+                    local pos, onScreen = Workspace.CurrentCamera:WorldToScreenPoint(part.Position)
+                    if onScreen then
+                        local diff = (Vector2.new(pos.X, pos.Y) - Vector2.new(Mouse.X, Mouse.Y)).Magnitude
+                        if diff <= bestDiff and isVisible(part) then
+                            bestDiff = diff
+                            bestPart = part
+                        end
                     end
                 end
+            end
+            if bestPart then
+                closest = plr
+                distance = bestDiff
+                chosenPart = bestPart
             end
         end
     end
     Aiming.Selected = closest
-    Aiming.SelectedPart = closest and getClosestPart(closest.Character) or nil
+    Aiming.SelectedPart = chosenPart
     return closest
 end
 
@@ -194,6 +203,17 @@ local function getPingSeconds()
     return (value or 50) / 1000
 end
 
+local function getPartVelocity(part, lastPositions)
+    local vel = part.AssemblyLinearVelocity or part.Velocity or Vector3.new()
+    local now = tick()
+    local last = lastPositions[part]
+    if last and last.time and now > last.time then
+        vel = (part.Position - last.pos) / (now - last.time)
+    end
+    lastPositions[part] = { pos = part.Position, time = now }
+    return vel
+end
+
 local function resolvePlayer(query)
     if not query or query == "" then
         return nil
@@ -263,6 +283,9 @@ function StandController.new()
     self.silentActive = false
     self.silentPredictionScalar = 1
     self.reloadCooldown = {}
+    self.lastCombatBuy = 0
+    self.lastTargetPositions = {}
+
 
     self.voidConnection = nil
     self.followConnection = nil
@@ -465,8 +488,8 @@ function StandController:startAimlock(target)
     self.silentActive = true
     Aiming.Enabled = true
     Aiming.Selected = target
-    Aiming.SelectedPart = target.Character and (target.Character:FindFirstChild("HumanoidRootPart") or target.Character:FindFirstChild("Head"))
     self.aimlockTarget = target
+    Aiming.SelectedPart = self:getTargetPart()
 end
 
 function StandController:stopAimlock()
@@ -478,7 +501,7 @@ function StandController:stopAimlock()
 end
 
 function StandController:updateAimlock()
-    if not Aiming.Check() then
+    if not self.silentActive or not self.state.inCombat or not Aiming.Check() then
         return
     end
     local char = getChar(lp)
@@ -487,12 +510,11 @@ function StandController:updateAimlock()
         self:stopAimlock()
         return
     end
-    local part = Aiming.SelectedPart
-    if not part then
+    local predicted, part = self:getPredictedAimPosition()
+    if not predicted or not part then
         self:stopAimlock()
         return
     end
-    local predicted = part.Position + (part.AssemblyLinearVelocity * ((getPingSeconds() * self.predictionVelocity) * self.silentPredictionScalar))
     root.CFrame = CFrame.lookAt(root.Position, predicted)
     local tool = char:FindFirstChildOfClass("Tool")
     if tool and tool:FindFirstChild("Handle") then
@@ -505,11 +527,22 @@ function StandController:getTargetPart()
     if not target or not target.Character or self:isKO(target) then
         return nil
     end
-    local part = target.Character:FindFirstChild(self.aimPart)
-    if not part then
-        part = target.Character:FindFirstChild("UpperTorso") or target.Character:FindFirstChild("Head") or target.Character:FindFirstChild("HumanoidRootPart")
+    local cam = Workspace.CurrentCamera
+    local bestPart, bestDiff
+    for _, name in ipairs({ "Head", "UpperTorso", "HumanoidRootPart" }) do
+        local p = target.Character:FindFirstChild(name)
+        if p then
+            local pos, onScreen = cam:WorldToScreenPoint(p.Position)
+            if onScreen then
+                local diff = (Vector2.new(pos.X, pos.Y) - Vector2.new(Mouse.X, Mouse.Y)).Magnitude
+                if not bestDiff or diff < bestDiff then
+                    bestDiff = diff
+                    bestPart = p
+                end
+            end
+        end
     end
-    return part
+    return bestPart
 end
 
 function StandController:getPredictedAimPosition()
@@ -518,7 +551,7 @@ function StandController:getPredictedAimPosition()
         return nil
     end
     local pingFactor = getPingSeconds() * self.predictionVelocity * self.silentPredictionScalar
-    local vel = part.AssemblyLinearVelocity or part.Velocity
+    local vel = getPartVelocity(part, self.lastTargetPositions)
     local predicted = part.Position + (vel * pingFactor)
     return predicted, part
 end
@@ -704,7 +737,10 @@ function StandController:equipAnyAllowed(allowPurchase)
 
     local tool, canon = findAllowed()
     if not tool and allowPurchase and not self.isBuyingGuns then
-        self:autoBuyGuns()
+        if not (self.state.inCombat and (tick() - self.lastCombatBuy) < 5) then
+            self.lastCombatBuy = tick()
+            self:autoBuyGuns()
+        end
         for _ = 1, 80 do
             tool, canon = findAllowed()
             if tool then
@@ -745,9 +781,6 @@ function StandController:shootTarget(target)
         end
 
         gun, gunKey = self:ensureAmmo(gun, gunKey)
-        if not gun then
-            gun, gunKey = self:equipAnyAllowed(true)
-        end
         if not gun then
             break
         end
@@ -897,6 +930,9 @@ function StandController:autoBuyGuns()
     if self.isBuyingGuns then
         return
     end
+    if self.state.inCombat and self:hasAnyAllowedGun() then
+        return
+    end
     self.isBuyingGuns = true
 
     local char = getChar(lp)
@@ -911,6 +947,7 @@ function StandController:autoBuyGuns()
     hum:UnequipTools()
     task.wait(0.05)
     local backpack = lp:FindFirstChild("Backpack")
+    local startTime = tick()
 
     local function locateGun(canon)
         if char then
@@ -943,13 +980,16 @@ function StandController:autoBuyGuns()
                 if detector and head then
                     local original = root.CFrame
                     root.CFrame = head.CFrame + Vector3.new(0, 3, 0)
-                    for _ = 1, 10 do
+                    for i = 1, 10 do
                         fireDetector(detector)
                         task.wait(0.1)
+                        if (tick() - startTime) > 12 then
+                            break
+                        end
                     end
                     for _ = 1, 60 do
                         existing = locateGun(canon)
-                        if existing then
+                        if existing or (tick() - startTime) > 12 then
                             break
                         end
                         task.wait(0.1)
@@ -1001,9 +1041,13 @@ function StandController:autoBuyAmmo(gunName)
     if detector and head then
         local original = root.CFrame
         root.CFrame = head.CFrame + Vector3.new(0, 3, 0)
+        local startTime = tick()
         for _ = 1, 8 do
             fireDetector(detector)
             task.wait(0.1)
+            if (tick() - startTime) > 8 then
+                break
+            end
         end
         task.wait(0.2)
         local refreshed = self:equipGunByName(lower)
@@ -1340,7 +1384,7 @@ do
         local old = mt.__index
         setreadonly(mt, false)
         mt.__index = function(t, k)
-            if controllerRef and controllerRef.silentActive and (k == "Hit" or k == "Target") and t == Mouse then
+            if controllerRef and controllerRef.silentActive and controllerRef.state and controllerRef.state.inCombat and (k == "Hit" or k == "Target") and t == Mouse then
                 local pos, part = controllerRef:getPredictedAimPosition()
                 if pos and part then
                     if k == "Hit" then

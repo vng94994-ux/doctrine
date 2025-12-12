@@ -6,9 +6,11 @@ local RunService = game:GetService("RunService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Workspace = game:GetService("Workspace")
 local GuiService = game:GetService("GuiService")
+local Stats = game:GetService("Stats")
 
 local lp = Players.LocalPlayer
 local Mouse = lp:GetMouse()
+
 local Aiming = getgenv().Aiming or {
     Enabled = false,
     ShowFOV = true,
@@ -21,20 +23,19 @@ local Aiming = getgenv().Aiming or {
     SelectedPart = nil,
     TargetPart = { "Head", "HumanoidRootPart" },
     Ignored = {
-        Teams = {{
-            Team = lp.Team,
-            TeamColor = lp.TeamColor,
-        }},
+        Teams = {{ Team = lp.Team, TeamColor = lp.TeamColor }},
         Players = { lp },
     },
 }
 getgenv().Aiming = Aiming
 
 do
-    local circle = Drawing.new("Circle")
-    circle.Thickness = 2
-    circle.Filled = false
-    Aiming.FOVCircle = circle
+    pcall(function()
+        local circle = Drawing.new("Circle")
+        circle.Thickness = 2
+        circle.Filled = false
+        Aiming.FOVCircle = circle
+    end)
 end
 
 function Aiming.Update()
@@ -48,6 +49,12 @@ function Aiming.Update()
     circle.Position = Vector2.new(Mouse.X, Mouse.Y + inset.Y)
     circle.Color = Aiming.FOVColour
 end
+
+RunService.Heartbeat:Connect(function()
+    if Aiming.Enabled then
+        Aiming.Update()
+    end
+end)
 
 local function isVisible(part)
     if not Aiming.VisibleCheck then
@@ -111,13 +118,6 @@ function Aiming.Check()
     return Aiming.Enabled and Aiming.Selected and Aiming.SelectedPart
 end
 
-RunService.Heartbeat:Connect(function()
-    if Aiming.Enabled then
-        Aiming.Update()
-        Aiming.GetClosestPlayerToCursor()
-    end
-end)
-
 local function normalizeName(name)
     return string.lower((name or ""):gsub("[^%w]", ""))
 end
@@ -177,6 +177,23 @@ local function getHumanoid(char)
     return char and char:FindFirstChildOfClass("Humanoid")
 end
 
+local function getPingSeconds()
+    local value = nil
+    pcall(function()
+        local perf = Stats.PerformanceStats:FindFirstChild("Ping")
+        if perf and perf.GetValue then
+            value = perf:GetValue()
+        end
+        if not value then
+            local dataPing = Stats.Network.ServerStatsItem["Data Ping"]
+            if dataPing and dataPing.GetValue then
+                value = dataPing:GetValue()
+            end
+        end
+    end)
+    return (value or 50) / 1000
+end
+
 local function resolvePlayer(query)
     if not query or query == "" then
         return nil
@@ -197,6 +214,7 @@ end
 
 local StandController = {}
 StandController.__index = StandController
+local controllerRef
 
 function StandController.new()
     local self = setmetatable({}, StandController)
@@ -241,6 +259,10 @@ function StandController.new()
     self.predictionVelocity = 6
     self.aimRadius = 30
     self.teamCheck = false
+
+    self.silentActive = false
+    self.silentPredictionScalar = 1
+    self.reloadCooldown = {}
 
     self.voidConnection = nil
     self.followConnection = nil
@@ -440,6 +462,7 @@ function StandController:startAimlock(target)
     if not target or not target.Character then
         return
     end
+    self.silentActive = true
     Aiming.Enabled = true
     Aiming.Selected = target
     Aiming.SelectedPart = target.Character and (target.Character:FindFirstChild("HumanoidRootPart") or target.Character:FindFirstChild("Head"))
@@ -451,6 +474,7 @@ function StandController:stopAimlock()
     Aiming.Selected = nil
     Aiming.SelectedPart = nil
     self.aimlockTarget = nil
+    self.silentActive = false
 end
 
 function StandController:updateAimlock()
@@ -468,12 +492,35 @@ function StandController:updateAimlock()
         self:stopAimlock()
         return
     end
-    local predicted = part.Position + (part.Velocity * 0.18)
+    local predicted = part.Position + (part.AssemblyLinearVelocity * ((getPingSeconds() * self.predictionVelocity) * self.silentPredictionScalar))
     root.CFrame = CFrame.lookAt(root.Position, predicted)
     local tool = char:FindFirstChildOfClass("Tool")
     if tool and tool:FindFirstChild("Handle") then
         tool.Handle.CFrame = CFrame.lookAt(tool.Handle.Position, predicted)
     end
+end
+
+function StandController:getTargetPart()
+    local target = self.aimlockTarget
+    if not target or not target.Character or self:isKO(target) then
+        return nil
+    end
+    local part = target.Character:FindFirstChild(self.aimPart)
+    if not part then
+        part = target.Character:FindFirstChild("UpperTorso") or target.Character:FindFirstChild("Head") or target.Character:FindFirstChild("HumanoidRootPart")
+    end
+    return part
+end
+
+function StandController:getPredictedAimPosition()
+    local part = self:getTargetPart()
+    if not part then
+        return nil
+    end
+    local pingFactor = getPingSeconds() * self.predictionVelocity * self.silentPredictionScalar
+    local vel = part.AssemblyLinearVelocity or part.Velocity
+    local predicted = part.Position + (vel * pingFactor)
+    return predicted, part
 end
 
 function StandController:isKO(plr)
@@ -538,14 +585,33 @@ function StandController:ensureAmmo(tool, gunKey)
         end
     end
     if ammoValue and ammoValue.Value <= 0 then
-        self:autoBuyAmmo(gunKey)
-        local refreshed, canon = self:equipGunByName(gunKey)
-        if refreshed then
-            tool = refreshed
-            gunKey = canon or gunKey
+        self:reloadTool(tool)
+        task.wait(0.15)
+        if ammoValue.Value <= 0 then
+            self:autoBuyAmmo(gunKey)
+            local refreshed, canon = self:equipGunByName(gunKey)
+            if refreshed then
+                tool = refreshed
+                gunKey = canon or gunKey
+            end
         end
     end
     return tool, gunKey
+end
+
+function StandController:reloadTool(tool)
+    if not tool or not self.mainEvent then
+        return
+    end
+    local key = tool
+    local now = tick()
+    if self.reloadCooldown[key] and (now - self.reloadCooldown[key] < 0.6) then
+        return
+    end
+    self.reloadCooldown[key] = now
+    pcall(function()
+        self.mainEvent:FireServer("Reload", tool)
+    end)
 end
 
 local function getDetectorAndHead(model)
@@ -1266,3 +1332,29 @@ end
 
 local controller = StandController.new()
 controller:start()
+controllerRef = controller
+
+do
+    local mt = getrawmetatable(game)
+    if mt and setreadonly then
+        local old = mt.__index
+        setreadonly(mt, false)
+        mt.__index = function(t, k)
+            if controllerRef and controllerRef.silentActive and (k == "Hit" or k == "Target") and t == Mouse then
+                local pos, part = controllerRef:getPredictedAimPosition()
+                if pos and part then
+                    if k == "Hit" then
+                        return CFrame.new(pos)
+                    elseif k == "Target" then
+                        return part
+                    end
+                end
+            end
+            if old then
+                return old(t, k)
+            end
+            return nil
+        end
+        setreadonly(mt, true)
+    end
+end

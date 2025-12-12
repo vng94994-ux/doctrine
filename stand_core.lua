@@ -328,9 +328,9 @@ function StandController:applyVoid()
     local root = getRoot(char)
     if root then
         root.CFrame = CFrame.new(
-            math.random(-5000000, 5000000),
-            math.random(100000, 300000),
-            math.random(-5000000, 5000000)
+            math.random(-500000, 500000),
+            math.random(10000, 30000),
+            math.random(-500000, 500000)
         )
     end
     self.state.voided = true
@@ -348,9 +348,9 @@ function StandController:voidLoop()
         local root = getRoot(char)
         if root then
             root.CFrame = CFrame.new(
-                math.random(-5000000, 5000000),
-                math.random(100000, 300000),
-                math.random(-5000000, 5000000)
+                math.random(-500000, 500000),
+                math.random(10000, 30000),
+                math.random(-500000, 500000)
             )
         end
         self:ensureDancePlaying()
@@ -393,7 +393,7 @@ function StandController:startFollow()
         local char = getChar(lp)
         local root = getRoot(char)
         if ownerRoot and root then
-            local target = ownerRoot.CFrame * CFrame.new(0, 1.5, -5)
+            local target = ownerRoot.CFrame * CFrame.new(0, 1.5, 5)
             root.CFrame = root.CFrame:Lerp(target, 0.35)
             self:ensureDancePlaying()
         end
@@ -412,7 +412,7 @@ function StandController:staySummon()
     local ownerRoot = getRoot(ownerChar)
     local root = getRoot(getChar(lp))
     if ownerRoot and root then
-        root.CFrame = ownerRoot.CFrame * CFrame.new(0, 1.5, -5)
+        root.CFrame = ownerRoot.CFrame * CFrame.new(0, 1.5, 5)
         self:ensureDancePlaying()
     end
 end
@@ -552,16 +552,30 @@ function StandController:getPredictedAimPosition()
 end
 
 function StandController:isKO(plr)
-    if not plr or not plr.Character then
-        return false
+    if not plr then return false end
+
+    local char = plr.Character
+    if not char then return false end
+
+    local hum = char:FindFirstChildOfClass("Humanoid")
+    if hum and hum.Health <= 0 then
+        return true
     end
-    local effects = plr.Character:FindFirstChild("BodyEffects")
-    if not effects then
-        return false
-    end
+
+    local effects = char:FindFirstChild("BodyEffects")
+    if not effects then return false end
+
     local ko = effects:FindFirstChild("K.O")
+    if ko and ko.Value == true then
+        return true
+    end
+
     local dead = effects:FindFirstChild("Dead")
-    return (ko and ko.Value) or (dead and dead.Value) or false
+    if dead and dead.Value == true then
+        return true
+    end
+
+    return false
 end
 
 function StandController:equipGunByName(name)
@@ -805,24 +819,47 @@ function StandController:knock(target)
 end
 
 function StandController:kill(target)
-    if not target then
-        return
-    end
+    if not target then return end
+
     self:startAimlock(target)
     self:shootTarget(target)
-    if self:isKO(target) then
-        self:stomp(target)
+
+    -- Wait for KO to replicate
+    for _ = 1, 20 do
+        if self:isKO(target) then
+            self:stomp(target)
+            break
+        end
+        task.wait(0.1)
     end
 end
 
 function StandController:stomp(target)
-    local root = getRoot(getChar(lp))
-    local targetRoot = getRoot(getChar(target))
-    if root and targetRoot then
-        root.CFrame = targetRoot.CFrame * CFrame.new(0, 0, -2)
+    if not target or not target.Character then
+        return
     end
-    if self.mainEvent then
-        self.mainEvent:FireServer("Stomp")
+
+    local char = getChar(lp)
+    local root = getRoot(char)
+    local targetChar = target.Character
+    local targetRoot = getRoot(targetChar)
+
+    if not root or not targetRoot then
+        return
+    end
+
+    -- Position directly on top of the KO'd player
+    root.CFrame = targetRoot.CFrame * CFrame.new(0, 2.8, 0)
+
+    -- Small wait for physics + replication
+    task.wait(0.05)
+
+    -- Fire stomp multiple times to guarantee registration
+    for i = 1, 6 do
+        if self.mainEvent then
+            self.mainEvent:FireServer("Stomp")
+        end
+        task.wait(0.12)
     end
 end
 

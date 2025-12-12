@@ -863,6 +863,19 @@ function StandController:parseChat(msg, speaker)
     end
     local command = args[1]:sub(2):lower()
     table.remove(args, 1)
+    local priority = { summon = true, s = true, v = true }
+    if priority[command] then
+        self:interruptCombat()
+        self.state.inCombat = false
+        self.state.abortCombat = false
+        self.isBuyingAmmo = false
+        self.isBuyingGuns = false
+        self.isBuyingMask = false
+        local mapped = command == "s" and "summon" or command
+        self:executeCommand(mapped, args, speaker)
+        return
+    end
+
     self:executeCommand(command, args, speaker)
 end
 
@@ -881,16 +894,9 @@ function StandController:initCommands()
         self:startFollow()
     end
 
-    handlers["s"] = function(self, args)
-        if args and args[1] then
-            local target = resolvePlayer(args[1])
-            if target then
-                self:stomp(target)
-                return
-            end
-        end
+    handlers["s"] = function(self)
         self:interruptCombat()
-        self:staySummon()
+        self:startFollow()
     end
 
     handlers["v"] = function(self)

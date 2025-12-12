@@ -61,6 +61,10 @@ local function canSelect(plr)
 end
 
 function Aiming.GetClosestPlayerToCursor()
+    local now = tick()
+    if Aiming._lastScan and (now - Aiming._lastScan) < 0.18 and Aiming._lastResult then
+        return Aiming._lastResult
+    end
     local closest, distance = nil, math.huge
     local chosenPart = nil
     for _, plr in ipairs(Players:GetPlayers()) do
@@ -88,6 +92,8 @@ function Aiming.GetClosestPlayerToCursor()
     end
     Aiming.Selected = closest
     Aiming.SelectedPart = chosenPart
+    Aiming._lastScan = now
+    Aiming._lastResult = closest
     return closest
 end
 
@@ -276,6 +282,11 @@ function StandController.new()
     self.isBuyingGuns = false
     self.isBuyingAmmo = false
     self.isBuyingMask = false
+    self.buyCooldown = {
+        guns = 0,
+        ammo = 0,
+        mask = 0,
+    }
 
     self.commandHandlers = {}
     self:initCommands()
@@ -433,6 +444,7 @@ function StandController:stopAllModes()
     self.state.stay = false
     self.state.assistTargets = {}
     self.activeMode = nil
+    self.timers.nearestTarget = nil
     Aiming.Enabled = false
     if self.followConnection then
         self.followConnection:Disconnect()
@@ -840,6 +852,10 @@ function StandController:autoBuyMask()
     if self.isBuyingMask then
         return
     end
+    local now = tick()
+    if now - (self.buyCooldown.mask or 0) < 2 then
+        return
+    end
     self.isBuyingMask = true
 
     local char = getChar(lp)
@@ -907,16 +923,22 @@ function StandController:autoBuyMask()
 
     self:autoBuyGuns()
     self.isBuyingMask = false
+    self.buyCooldown.mask = tick()
 end
 
 function StandController:autoBuyGuns()
     if self.isBuyingGuns then
         return
     end
+    local now = tick()
+    if now - (self.buyCooldown.guns or 0) < 1.5 then
+        return
+    end
     if self.state.inCombat and self:hasAnyAllowedGun() then
         return
     end
     self.isBuyingGuns = true
+    self.buyCooldown.guns = now
 
     local char = getChar(lp)
     local root = getRoot(char)
@@ -996,6 +1018,10 @@ function StandController:autoBuyAmmo(gunName)
     if self.isBuyingAmmo then
         return
     end
+    local now = tick()
+    if now - (self.buyCooldown.ammo or 0) < 1.0 then
+        return
+    end
     self.isBuyingAmmo = true
 
     local char = getChar(lp)
@@ -1043,6 +1069,7 @@ function StandController:autoBuyAmmo(gunName)
     end
 
     self.isBuyingAmmo = false
+    self.buyCooldown.ammo = tick()
     self:ensureDancePlaying()
 end
 

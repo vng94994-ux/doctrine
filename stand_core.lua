@@ -5,7 +5,6 @@ local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Workspace = game:GetService("Workspace")
-local GuiService = game:GetService("GuiService")
 local Stats = game:GetService("Stats")
 
 local lp = Players.LocalPlayer
@@ -13,10 +12,6 @@ local Mouse = lp:GetMouse()
 
 local Aiming = getgenv().Aiming or {
     Enabled = false,
-    ShowFOV = true,
-    FOV = 60,
-    FOVSides = 12,
-    FOVColour = Color3.fromRGB(231, 84, 128),
     VisibleCheck = true,
     HitChance = 100,
     Selected = nil,
@@ -28,33 +23,6 @@ local Aiming = getgenv().Aiming or {
     },
 }
 getgenv().Aiming = Aiming
-
-do
-    pcall(function()
-        local circle = Drawing.new("Circle")
-        circle.Thickness = 2
-        circle.Filled = false
-        Aiming.FOVCircle = circle
-    end)
-end
-
-function Aiming.Update()
-    local circle = Aiming.FOVCircle
-    if not circle then
-        return
-    end
-    circle.Visible = Aiming.ShowFOV and Aiming.Enabled
-    circle.Radius = Aiming.FOV * 3
-    local inset = GuiService:GetGuiInset()
-    circle.Position = Vector2.new(Mouse.X, Mouse.Y + inset.Y)
-    circle.Color = Aiming.FOVColour
-end
-
-RunService.Heartbeat:Connect(function()
-    if Aiming.Enabled then
-        Aiming.Update()
-    end
-end)
 
 local function isVisible(part)
     if not Aiming.VisibleCheck then
@@ -93,7 +61,7 @@ local function canSelect(plr)
 end
 
 function Aiming.GetClosestPlayerToCursor()
-    local closest, distance = nil, Aiming.FOV * 3
+    local closest, distance = nil, math.huge
     local chosenPart = nil
     for _, plr in ipairs(Players:GetPlayers()) do
         if canSelect(plr) and plr.Character then
@@ -285,6 +253,14 @@ function StandController.new()
     self.reloadCooldown = {}
     self.lastCombatBuy = 0
     self.lastTargetPositions = {}
+    self.timers = {
+        nearestTime = 0,
+        nearestTarget = nil,
+        auraScan = 0,
+        loopCheck = 0,
+        aimUpdate = 0,
+        danceCheck = 0,
+    }
 
 
     self.voidConnection = nil
@@ -475,7 +451,14 @@ function StandController:initializeAimlock()
 end
 
 function StandController:getNearestTarget()
-    return Aiming.GetClosestPlayerToCursor()
+    local now = tick()
+    if now - (self.timers.nearestTime or 0) < 0.2 and self.timers.nearestTarget then
+        return self.timers.nearestTarget
+    end
+    local target = Aiming.GetClosestPlayerToCursor()
+    self.timers.nearestTarget = target
+    self.timers.nearestTime = now
+    return target
 end
 
 function StandController:startAimlock(target)
@@ -1299,8 +1282,25 @@ function StandController:loopSystems()
         self.heartbeatConnection:Disconnect()
     end
     self.heartbeatConnection = RunService.Heartbeat:Connect(function()
-        self:ensureDancePlaying()
-        self:updateAimlock()
+        local now = tick()
+        if now - (self.timers.danceCheck or 0) > 0.4 then
+            self:ensureDancePlaying()
+            self.timers.danceCheck = now
+        end
+
+        if self.silentActive and self.state.inCombat and (now - (self.timers.aimUpdate or 0)) > 0.05 then
+            self:updateAimlock()
+            self.timers.aimUpdate = now
+        end
+
+        if not self.activeMode then
+            return
+        end
+        if (now - (self.timers.loopCheck or 0)) < 0.1 then
+            return
+        end
+        self.timers.loopCheck = now
+
         if self.activeMode == "loopkill" and self.state.loopkillTarget then
             if self:isKO(self.state.loopkillTarget) then
                 self:stomp(self.state.loopkillTarget)
@@ -1323,6 +1323,10 @@ function StandController:loopSystems()
                 self:kill(target)
             end
         elseif self.activeMode == "aura" and self.state.aura then
+            if now - (self.timers.auraScan or 0) < 0.25 then
+                return
+            end
+            self.timers.auraScan = now
             for _, plr in ipairs(Players:GetPlayers()) do
                 if plr ~= lp and not self.state.auraWhitelist[string.lower(plr.Name)] and not self:isKO(plr) then
                     self:startAimlock(plr)

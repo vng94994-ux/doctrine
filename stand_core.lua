@@ -4,6 +4,78 @@ local COMMAND_PREFIX = "."
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Workspace = game:GetService("Workspace")
+
+local player = Players.LocalPlayer
+local Camera = Workspace.CurrentCamera
+local Mouse = player:GetMouse()
+
+getgenv().Silent = getgenv().Silent or {
+    Enabled = true,
+    Prediction = 0.18,
+    TargetPart = "HumanoidRootPart",
+    FOVRadius = 200,
+    FOVVisible = true,
+    FOVTransparency = 0.5,
+}
+
+local silentCircle
+pcall(function()
+    silentCircle = Drawing.new("Circle")
+    silentCircle.Color = Color3.fromRGB(255, 255, 255)
+    silentCircle.Thickness = 2
+    silentCircle.Filled = false
+    silentCircle.Transparency = getgenv().Silent.FOVTransparency
+    silentCircle.Radius = getgenv().Silent.FOVRadius
+    silentCircle.Visible = getgenv().Silent.FOVVisible
+end)
+
+local function updateFOVCircle()
+    if not silentCircle then
+        return
+    end
+    local guiInset = game:GetService("GuiService"):GetGuiInset()
+    silentCircle.Position = Vector2.new(Mouse.X, Mouse.Y + guiInset.Y)
+    silentCircle.Radius = getgenv().Silent.FOVRadius
+    silentCircle.Transparency = getgenv().Silent.FOVTransparency
+    silentCircle.Visible = getgenv().Silent.FOVVisible
+end
+
+RunService.RenderStepped:Connect(updateFOVCircle)
+
+local function GetClosestForSilent()
+    local closest, distance = nil, getgenv().Silent.FOVRadius
+    for _, v in ipairs(Players:GetPlayers()) do
+        if v ~= player and v.Character and v.Character:FindFirstChild(getgenv().Silent.TargetPart) then
+            local pos, onScreen = Camera:WorldToScreenPoint(v.Character[getgenv().Silent.TargetPart].Position)
+            if onScreen then
+                local diff = (Vector2.new(pos.X, pos.Y) - Vector2.new(Mouse.X, Mouse.Y)).Magnitude
+                if diff < distance then
+                    distance = diff
+                    closest = v
+                end
+            end
+        end
+    end
+    return closest
+end
+
+local mt = getrawmetatable(game)
+if mt and setreadonly then
+    setreadonly(mt, false)
+    local oldIndex = mt.__index
+    mt.__index = function(self, key)
+        if getgenv().Silent.Enabled and self == Mouse and key == "Hit" then
+            local target = GetClosestForSilent()
+            if target and target.Character and target.Character:FindFirstChild(getgenv().Silent.TargetPart) then
+                local part = target.Character[getgenv().Silent.TargetPart]
+                return part.CFrame + (part.Velocity * getgenv().Silent.Prediction)
+            end
+        end
+        return oldIndex(self, key)
+    end
+    setreadonly(mt, true)
+end
 
 local lp = Players.LocalPlayer
 
@@ -287,6 +359,15 @@ function StandController:interruptCombat()
     self.state.akill = false
     self.state.abortCombat = true
     self:stopAimlock()
+end
+
+function StandController:forceStopAll()
+    self:interruptCombat()
+    self.state.inCombat = false
+    self.isBuyingAmmo = false
+    self.isBuyingGuns = false
+    self.isBuyingMask = false
+    self.state.followOwner = false
 end
 
 function StandController:initializeAimlock()
@@ -863,17 +944,17 @@ function StandController:parseChat(msg, speaker)
     end
     local command = args[1]:sub(2):lower()
     table.remove(args, 1)
-    local priority = { summon = true, s = true, v = true }
+    local priority = { summon = true, v = true, mask = true }
     if priority[command] then
+        self:forceStopAll()
+        self.state.abortCombat = false
+        self:executeCommand(command, args, speaker)
+        return
+    end
+
+    if command ~= "l" and command ~= "lk" and command ~= "akill" and command ~= "a" then
         self:interruptCombat()
         self.state.inCombat = false
-        self.state.abortCombat = false
-        self.isBuyingAmmo = false
-        self.isBuyingGuns = false
-        self.isBuyingMask = false
-        local mapped = command == "s" and "summon" or command
-        self:executeCommand(mapped, args, speaker)
-        return
     end
 
     self:executeCommand(command, args, speaker)
@@ -894,9 +975,14 @@ function StandController:initCommands()
         self:startFollow()
     end
 
-    handlers["s"] = function(self)
+    handlers["s"] = function(self, args)
         self:interruptCombat()
-        self:startFollow()
+        if args and args[1] then
+            local target = resolvePlayer(args[1])
+            if target then
+                self:stomp(target)
+            end
+        end
     end
 
     handlers["v"] = function(self)
@@ -921,6 +1007,7 @@ function StandController:initCommands()
     end
 
     handlers["mask"] = function(self, args)
+        self:forceStopAll()
         if args[1] and args[1]:lower() == "on" then
             self.state.maskEnabled = true
             self:autoBuyMask()

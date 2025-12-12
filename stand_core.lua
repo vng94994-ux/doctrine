@@ -1,4 +1,4 @@
--- MoonStand core script (refactored)
+-- MoonStand core script (restored complexity)
 local env = getgenv()
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
@@ -6,8 +6,8 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local TweenService = game:GetService("TweenService")
 local Stats = game:GetService("Stats")
 local lp = Players.LocalPlayer
-local mainEvent = ReplicatedStorage:FindFirstChild("MainEvent")
 local mouse = lp:GetMouse()
+local mainEvent = ReplicatedStorage:FindFirstChild("MainEvent")
 
 local function safe(f)
     local ok, res = pcall(f)
@@ -21,12 +21,17 @@ local function normalizeName(name)
     return string.lower((name:gsub("[^%w]", "")))
 end
 
--- build allowed guns
+local function tableContains(tbl, key)
+    return tbl and tbl[normalizeName(key)] == true
+end
+
+-- allowed gun list
 local allowedList = {}
 for _, g in ipairs(env.Guns or env.Gguns or {}) do
     allowedList[normalizeName(g)] = true
 end
 
+-- shop references
 local shop = workspace:FindFirstChild("Ignored") and workspace.Ignored:FindFirstChild("Shop")
 local gunShopPaths = shop and {
     rifle = shop["[Rifle] - $1694"],
@@ -46,9 +51,7 @@ local ammoShopPaths = shop and {
     lmg = shop["200 [LMG Ammo] - $328"],
 }
 
-local maskShopPaths = shop and {
-    mask = shop["[Breathing Mask] - $66"],
-}
+local maskShopPaths = shop and { mask = shop["[Breathing Mask] - $66"] }
 
 local StandController = {}
 StandController.__index = StandController
@@ -76,7 +79,11 @@ function StandController.new()
     self.aimEnabled = false
     self.isBuyingGuns = false
     self.isBuyingAmmo = false
+    self.isBuyingMask = false
     self.reloadCooldown = 0
+    self.loopConn = nil
+    self.charConn = nil
+    self.silentAimHooked = false
     self:setupSilentAimHook()
     return self
 end
@@ -115,6 +122,19 @@ local function getHumanoid(char)
     return char and char:FindFirstChildOfClass("Humanoid")
 end
 
+function StandController:isKO(plr)
+    if not plr or not plr.Character then
+        return false
+    end
+    local effects = plr.Character:FindFirstChild("BodyEffects")
+    if not effects then
+        return false
+    end
+    local ko = effects:FindFirstChild("K.O")
+    local dead = effects:FindFirstChild("Dead")
+    return (ko and ko.Value) or (dead and dead.Value)
+end
+
 function StandController:ensureAnimation()
     local char = getChar(lp)
     local hum = getHumanoid(char)
@@ -141,40 +161,13 @@ function StandController:teleport(cf)
     end
 end
 
-function StandController:void()
-    self:setMode("void")
-    self.state.voided = true
-    self.state.followOwner = false
-    self.state.stay = false
-    self.aimEnabled = false
-    local root = getRoot(getChar(lp))
-    if root then
-        root.CFrame = CFrame.new(math.random(-5000000, 5000000), math.random(100000, 300000), math.random(-5000000, 5000000))
-    end
-end
-
-function StandController:summon(follow)
-    self:setMode("follow")
-    self.state.voided = false
-    self.state.followOwner = follow
-    self.state.stay = not follow
-    local owner = Players:FindFirstChild(self.ownerName)
-    local ownerRoot = getRoot(getChar(owner))
-    if ownerRoot then
-        self:teleport(ownerRoot.CFrame * CFrame.new(0, 1.5, -5))
-    end
-end
-
-function StandController:updateFollow()
-    if not self.state.followOwner then
-        return
-    end
-    local owner = Players:FindFirstChild(self.ownerName)
-    local ownerRoot = getRoot(getChar(owner))
-    local root = getRoot(getChar(lp))
-    if ownerRoot and root then
-        local target = ownerRoot.CFrame * CFrame.new(0, 1.5, -5)
-        root.CFrame = root.CFrame:Lerp(target, 0.35)
+function StandController:unequipTools()
+    local char = getChar(lp)
+    local hum = getHumanoid(char)
+    if hum then
+        safe(function()
+            hum:UnequipTools()
+        end)
     end
 end
 
@@ -227,16 +220,6 @@ function StandController:findShopParts(model)
     return head, cd
 end
 
-function StandController:unequipTools()
-    local char = getChar(lp)
-    local hum = getHumanoid(char)
-    if hum then
-        pcall(function()
-            hum:UnequipTools()
-        end)
-    end
-end
-
 function StandController:autoBuyMask()
     if self.isBuyingMask or not maskShopPaths then
         return
@@ -252,11 +235,11 @@ function StandController:autoBuyMask()
         root.CFrame = head.CFrame + Vector3.new(0, 3, 0)
         for _ = 1, 8 do
             fireclickdetector(cd)
-            task.wait(0.1)
+            task.wait(0.08)
         end
         local backpack = lp:FindFirstChild("Backpack")
         local maskTool
-        for _ = 1, 30 do
+        for _ = 1, 40 do
             if backpack then
                 for _, item in ipairs(backpack:GetChildren()) do
                     if item:IsA("Tool") and string.find(string.lower(item.Name), "mask") then
@@ -273,7 +256,7 @@ function StandController:autoBuyMask()
         if maskTool then
             maskTool.Parent = char
             task.wait()
-            pcall(function()
+            safe(function()
                 maskTool:Activate()
             end)
         end
@@ -301,9 +284,9 @@ function StandController:autoBuyAmmo(gunName)
     if root and head and cd then
         local old = root.CFrame
         root.CFrame = head.CFrame + Vector3.new(0, 3, 0)
-        for _ = 1, 8 do
+        for _ = 1, 10 do
             fireclickdetector(cd)
-            task.wait(0.1)
+            task.wait(0.08)
         end
         if old then
             root.CFrame = old
@@ -344,11 +327,11 @@ function StandController:autoBuyGuns()
             if root and head and cd then
                 local old = root.CFrame
                 root.CFrame = head.CFrame + Vector3.new(0, 3, 0)
-                for _ = 1, 8 do
+                for _ = 1, 10 do
                     fireclickdetector(cd)
-                    task.wait(0.1)
+                    task.wait(0.08)
                 end
-                for _ = 1, 40 do
+                for _ = 1, 50 do
                     local tool = hasGun(gunKey)
                     if tool then
                         tool.Parent = char
@@ -363,6 +346,10 @@ function StandController:autoBuyGuns()
         end
     end
     self.isBuyingGuns = false
+end
+
+function StandController:isInCombat()
+    return self.state.mode == "kill" or self.state.mode == "knock" or self.state.mode == "loopkill" or self.state.mode == "loopknock" or self.state.mode == "aura" or self.state.mode == "akill"
 end
 
 function StandController:equipAnyAllowed(allowBuyDuringCombat)
@@ -403,19 +390,6 @@ function StandController:equipAnyAllowed(allowBuyDuringCombat)
     return tool
 end
 
-function StandController:isKO(plr)
-    if not plr or not plr.Character then
-        return false
-    end
-    local effects = plr.Character:FindFirstChild("BodyEffects")
-    if not effects then
-        return false
-    end
-    local ko = effects:FindFirstChild("K.O")
-    local dead = effects:FindFirstChild("Dead")
-    return (ko and ko.Value) or (dead and dead.Value)
-end
-
 function StandController:getNearestTarget()
     local best, dist
     local char = getChar(lp)
@@ -438,15 +412,7 @@ function StandController:getNearestTarget()
     return best
 end
 
-function StandController:isInCombat()
-    return self.state.mode == "kill" or self.state.mode == "knock" or self.state.mode == "loopkill" or self.state.mode == "loopknock" or self.state.mode == "aura" or self.state.mode == "akill"
-end
-
-function StandController:updateAim(target)
-    self.aimTarget = target
-    self.aimEnabled = target ~= nil
-end
-
+-- silent aim
 function StandController:predictPosition(part)
     if not part then
         return nil
@@ -462,11 +428,15 @@ function StandController:predictPosition(part)
 end
 
 function StandController:setupSilentAimHook()
+    if self.silentAimHooked then
+        return
+    end
     local mt = getrawmetatable(game)
     if not mt then
         return
     end
     local old = mt.__index
+    self.silentAimHooked = true
     setreadonly(mt, false)
     mt.__index = function(t, k)
         if self.aimEnabled and t == mouse and (k == "Hit" or k == "Target") then
@@ -484,8 +454,13 @@ function StandController:setupSilentAimHook()
     setreadonly(mt, true)
 end
 
+function StandController:updateAim(target)
+    self.aimTarget = target
+    self.aimEnabled = target ~= nil
+end
+
 function StandController:autoReload(tool)
-    if not tool or tick() - self.reloadCooldown < 0.5 then
+    if not tool or tick() - self.reloadCooldown < 0.35 then
         return
     end
     local ammo
@@ -499,7 +474,7 @@ function StandController:autoReload(tool)
     if ammo and ammo.Value <= 0 and mainEvent then
         self.reloadCooldown = tick()
         mainEvent:FireServer("Reload", tool)
-        task.wait(0.2)
+        task.wait(0.08)
     end
 end
 
@@ -509,96 +484,142 @@ function StandController:fireTool(tool)
     end
 end
 
+function StandController:teleportNearTarget(target)
+    local root = getRoot(getChar(lp))
+    local troot = getRoot(getChar(target))
+    if root and troot then
+        root.CFrame = troot.CFrame * CFrame.new(0, 0, -2)
+    end
+end
+
 function StandController:shootTarget(target, doStomp)
     if not target then
         return
     end
-    self:setMode(doStomp and "kill" or "knock")
     self.state.voided = false
+    self:setMode(doStomp and "kill" or "knock")
     self:updateAim(target)
     local char = getChar(lp)
-    local root = getRoot(char)
-    local tool = self:equipAnyAllowed(true)
-    if not tool then
+    local gun = self:equipAnyAllowed(true)
+    if not gun then
         return
     end
-    while target and target.Character and root and not self:isKO(target) and self.state.mode do
-        local tRoot = getRoot(target.Character)
-        if not tRoot then
+    while target and target.Parent and not self:isKO(target) and self.state.mode and (self.state.mode == "kill" or self.state.mode == "knock") do
+        char = getChar(lp)
+        gun = self:equipAnyAllowed(false) or gun
+        local root = getRoot(char)
+        local troot = getRoot(getChar(target))
+        if not root or not troot then
             break
         end
-        tool = self:equipAnyAllowed() or tool
-        self:autoReload(tool)
-        root.CFrame = tRoot.CFrame * CFrame.new(0, 0, -3)
-        self:fireTool(tool)
-        RunService.Heartbeat:Wait()
-        char = getChar(lp)
-        root = getRoot(char)
+        self:updateAim(target)
+        self:teleportNearTarget(target)
+        self:autoReload(gun)
+        gun.Parent = char
+        self:fireTool(gun)
+        task.wait(0.05)
+    end
+    if doStomp and target and self:isKO(target) then
+        self:stomp(target)
     end
     self:updateAim(nil)
-    if doStomp and target and self:isKO(target) then
-        local tRoot = getRoot(target.Character)
-        local r = getRoot(getChar(lp))
-        if tRoot and r and mainEvent then
-            r.CFrame = tRoot.CFrame * CFrame.new(0, 0, -2)
-            mainEvent:FireServer("Stomp")
-        end
-    end
 end
 
-function StandController:loopKill(target)
-    self:setMode("loopkill")
-    while self.state.mode == "loopkill" and target do
-        self:shootTarget(target, true)
-        if self.state.mode ~= "loopkill" then
-            break
-        end
-        task.wait(0.2)
+function StandController:stomp(target)
+    local root = getRoot(getChar(lp))
+    local troot = getRoot(getChar(target))
+    if root and troot then
+        root.CFrame = troot.CFrame * CFrame.new(0, 0, -2)
     end
-end
-
-function StandController:loopKnock(target)
-    self:setMode("loopknock")
-    while self.state.mode == "loopknock" and target do
-        self:shootTarget(target, false)
-        if self.state.mode ~= "loopknock" then
-            break
-        end
-        task.wait(0.2)
+    if mainEvent then
+        mainEvent:FireServer("Stomp")
     end
 end
 
 function StandController:bring(target)
-    if not target then
-        return
-    end
-    local tRoot = getRoot(target.Character)
     local root = getRoot(getChar(lp))
-    if root and tRoot then
-        self:setMode("bring")
-        tRoot.CFrame = root.CFrame * CFrame.new(0, 0, -2)
+    local troot = getRoot(getChar(target))
+    if root and troot then
+        troot.CFrame = root.CFrame * CFrame.new(0, 0, -2)
     end
 end
 
-function StandController:handleCommand(cmd, args)
+function StandController:sky(target)
+    local troot = getRoot(getChar(target))
+    if troot then
+        troot.Velocity = Vector3.new(0, 200, 0)
+    end
+end
+
+function StandController:fling(target)
+    local troot = getRoot(getChar(target))
+    if troot then
+        troot.Velocity = Vector3.new(500, 500, 500)
+    end
+end
+
+function StandController:void()
+    self:setMode("void")
+    self.state.voided = true
+    self.state.followOwner = false
+    self.state.stay = false
+    self.aimEnabled = false
+    local root = getRoot(getChar(lp))
+    if root then
+        root.CFrame = CFrame.new(math.random(-5000000, 5000000), math.random(100000, 300000), math.random(-5000000, 5000000))
+    end
+end
+
+function StandController:summon(follow)
+    self:setMode("follow")
+    self.state.voided = false
+    self.state.followOwner = follow
+    self.state.stay = not follow
+    local owner = Players:FindFirstChild(self.ownerName)
+    local ownerRoot = getRoot(getChar(owner))
+    if ownerRoot then
+        self:teleport(ownerRoot.CFrame * CFrame.new(0, 1.5, -5))
+    end
+end
+
+function StandController:updateFollow()
+    if not self.state.followOwner then
+        return
+    end
+    local owner = Players:FindFirstChild(self.ownerName)
+    local ownerRoot = getRoot(getChar(owner))
+    local root = getRoot(getChar(lp))
+    if ownerRoot and root then
+        local target = ownerRoot.CFrame * CFrame.new(0, 1.5, -5)
+        root.CFrame = root.CFrame:Lerp(target, 0.35)
+    end
+end
+
+function StandController:handlePriority(cmd, args)
     if cmd == "v" then
         self:stopAllModes()
         self:void()
-        return
-    elseif cmd == "summon" then
+        return true
+    end
+    if cmd == "summon" then
         self:stopAllModes()
         self:summon(true)
-        return
-    elseif cmd == "mask" then
-        local state = args[1] and args[1]:lower()
-        if state == "on" then
-            self:stopAllModes()
+        return true
+    end
+    if cmd == "mask" then
+        if args[1] and args[1]:lower() == "on" then
             self.state.maskEnabled = true
             self:autoBuyMask()
-            self:autoBuyGuns()
-        elseif state == "off" then
+        else
             self.state.maskEnabled = false
         end
+        return true
+    end
+    return false
+end
+
+function StandController:handleCommand(cmd, args)
+    if self:handlePriority(cmd, args) then
         return
     end
     if cmd == "s" then
@@ -606,15 +627,27 @@ function StandController:handleCommand(cmd, args)
             local target = self:resolvePlayer(args[1])
             if target then
                 self:stopAllModes()
-                self:shootTarget(target, true)
+                self:setMode("stomp")
+                self:stomp(target)
             end
         end
+        return
+    end
+    if cmd == "summon" then
+        self:stopAllModes()
+        self:summon(true)
+        return
+    end
+    if cmd == "v" then
+        self:stopAllModes()
+        self:void()
         return
     end
     if cmd == "d" then
         local target = self:resolvePlayer(args[1])
         if target then
             self:stopAllModes()
+            self:setMode("knock")
             self:shootTarget(target, false)
         end
         return
@@ -623,9 +656,8 @@ function StandController:handleCommand(cmd, args)
         local target = self:resolvePlayer(args[1])
         if target then
             self:stopAllModes()
-            task.spawn(function()
-                self:loopKill(target)
-            end)
+            self.state.loopkillTarget = target
+            self.state.mode = "loopkill"
         end
         return
     end
@@ -633,27 +665,28 @@ function StandController:handleCommand(cmd, args)
         local target = self:resolvePlayer(args[1])
         if target then
             self:stopAllModes()
-            task.spawn(function()
-                self:loopKnock(target)
-            end)
+            self.state.loopknockTarget = target
+            self.state.mode = "loopknock"
         end
         return
     end
     if cmd == "akill" then
-        local state = args[1] and args[1]:lower()
-        if state == "on" then
-            self:setMode("akill")
+        self:stopAllModes()
+        if args[1] and args[1]:lower() == "on" then
+            self.state.akill = true
+            self.state.mode = "akill"
         else
-            self:stopAllModes()
+            self.state.akill = false
         end
         return
     end
     if cmd == "a" then
-        local state = args[1] and args[1]:lower()
-        if state == "on" then
-            self:setMode("aura")
+        self:stopAllModes()
+        if args[1] and args[1]:lower() == "on" then
+            self.state.aura = true
+            self.state.mode = "aura"
         else
-            self:stopAllModes()
+            self.state.aura = false
         end
         return
     end
@@ -673,6 +706,7 @@ function StandController:handleCommand(cmd, args)
         local target = self:resolvePlayer(args[1])
         if target then
             self:stopAllModes()
+            self:setMode("bring")
             self:bring(target)
         end
         return
@@ -733,8 +767,14 @@ function StandController:parseChat(msg, speaker)
     for w in msg:gmatch("%S+") do
         table.insert(args, w)
     end
+    if #args == 0 then
+        return
+    end
     local command = args[1]:sub(2):lower()
     table.remove(args, 1)
+    if self:handlePriority(command, args) then
+        return
+    end
     self:handleCommand(command, args)
 end
 
@@ -754,7 +794,7 @@ function StandController:bindChat()
     end))
 end
 
-function StandController:startLoops()
+function StandController:loopSystems()
     if self.loopConn then
         self.loopConn:Disconnect()
     end
@@ -766,13 +806,25 @@ function StandController:startLoops()
         if self.state.maskEnabled then
             self:autoBuyMask()
         end
-        if self.state.mode == "akill" then
+        if self.state.mode == "loopkill" and self.state.loopkillTarget then
+            if self:isKO(self.state.loopkillTarget) then
+                self:stomp(self.state.loopkillTarget)
+            else
+                self:shootTarget(self.state.loopkillTarget, true)
+            end
+        elseif self.state.mode == "loopknock" and self.state.loopknockTarget then
+            if self:isKO(self.state.loopknockTarget) then
+                -- stay idle until retargeted
+            else
+                self:shootTarget(self.state.loopknockTarget, false)
+            end
+        elseif self.state.mode == "akill" then
             local t = self:getNearestTarget()
             if t then
                 self:shootTarget(t, true)
             end
         elseif self.state.mode == "aura" then
-            local victim = nil
+            local victim
             for _, plr in ipairs(Players:GetPlayers()) do
                 if plr ~= lp and not self.state.auraWhitelist[normalizeName(plr.Name)] and not self:isKO(plr) then
                     victim = plr
@@ -803,7 +855,7 @@ function StandController:start()
         end
         self:autoBuyGuns()
     end)
-    self:startLoops()
+    self:loopSystems()
 end
 
 local controller = StandController.new()

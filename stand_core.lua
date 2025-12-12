@@ -618,26 +618,38 @@ function StandController:ensureAmmo(tool, gunKey)
     if not tool then
         return tool, gunKey
     end
+
     local ammoValue
     for _, name in ipairs({ "Ammo", "AmmoCount", "Clip", "AmmoInGun" }) do
         local v = tool:FindFirstChild(name)
-        if v and v.Value ~= nil then
+        if v and typeof(v.Value) == "number" then
             ammoValue = v
             break
         end
     end
-    if ammoValue and ammoValue.Value <= 0 then
+
+    -- Low ammo threshold (not just zero)
+    if ammoValue and ammoValue.Value <= 2 then
         self:reloadTool(tool)
         task.wait(0.15)
-        if ammoValue.Value <= 0 then
+
+        -- Still low? Force buy
+        if ammoValue.Value <= 2 then
             self:autoBuyAmmo(gunKey)
-            local refreshed, canon = self:equipGunByName(gunKey)
-            if refreshed then
-                tool = refreshed
-                gunKey = canon or gunKey
+
+            -- Retry equip a few times (replication-safe)
+            for _ = 1, 6 do
+                local refreshed, canon = self:equipGunByName(gunKey)
+                if refreshed then
+                    tool = refreshed
+                    gunKey = canon or gunKey
+                    break
+                end
+                task.wait(0.12)
             end
         end
     end
+
     return tool, gunKey
 end
 
@@ -799,6 +811,7 @@ function StandController:shootTarget(target)
             gun.Parent = char
         end
         gun:Activate()
+        task.wait(0.03)
         RunService.Heartbeat:Wait()
         char = getChar(lp)
         root = getRoot(char)

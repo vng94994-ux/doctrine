@@ -5,79 +5,118 @@ local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Workspace = game:GetService("Workspace")
+local GuiService = game:GetService("GuiService")
 
-local player = Players.LocalPlayer
-local Camera = Workspace.CurrentCamera
-local Mouse = player:GetMouse()
-
-getgenv().Silent = getgenv().Silent or {
-    Enabled = true,
-    Prediction = 0.18,
-    TargetPart = "HumanoidRootPart",
-    FOVRadius = 200,
-    FOVVisible = true,
-    FOVTransparency = 0.5,
+local lp = Players.LocalPlayer
+local Mouse = lp:GetMouse()
+local Aiming = getgenv().Aiming or {
+    Enabled = false,
+    ShowFOV = true,
+    FOV = 60,
+    FOVSides = 12,
+    FOVColour = Color3.fromRGB(231, 84, 128),
+    VisibleCheck = true,
+    HitChance = 100,
+    Selected = nil,
+    SelectedPart = nil,
+    TargetPart = { "Head", "HumanoidRootPart" },
+    Ignored = {
+        Teams = {{
+            Team = lp.Team,
+            TeamColor = lp.TeamColor,
+        }},
+        Players = { lp },
+    },
 }
+getgenv().Aiming = Aiming
 
-local silentCircle
-pcall(function()
-    silentCircle = Drawing.new("Circle")
-    silentCircle.Color = Color3.fromRGB(255, 255, 255)
-    silentCircle.Thickness = 2
-    silentCircle.Filled = false
-    silentCircle.Transparency = getgenv().Silent.FOVTransparency
-    silentCircle.Radius = getgenv().Silent.FOVRadius
-    silentCircle.Visible = getgenv().Silent.FOVVisible
-end)
-
-local function updateFOVCircle()
-    if not silentCircle then
-        return
-    end
-    local guiInset = game:GetService("GuiService"):GetGuiInset()
-    silentCircle.Position = Vector2.new(Mouse.X, Mouse.Y + guiInset.Y)
-    silentCircle.Radius = getgenv().Silent.FOVRadius
-    silentCircle.Transparency = getgenv().Silent.FOVTransparency
-    silentCircle.Visible = getgenv().Silent.FOVVisible
+do
+    local circle = Drawing.new("Circle")
+    circle.Thickness = 2
+    circle.Filled = false
+    Aiming.FOVCircle = circle
 end
 
-RunService.RenderStepped:Connect(updateFOVCircle)
+function Aiming.Update()
+    local circle = Aiming.FOVCircle
+    if not circle then
+        return
+    end
+    circle.Visible = Aiming.ShowFOV and Aiming.Enabled
+    circle.Radius = Aiming.FOV * 3
+    local inset = GuiService:GetGuiInset()
+    circle.Position = Vector2.new(Mouse.X, Mouse.Y + inset.Y)
+    circle.Color = Aiming.FOVColour
+end
 
-local function GetClosestForSilent()
-    local closest, distance = nil, getgenv().Silent.FOVRadius
-    for _, v in ipairs(Players:GetPlayers()) do
-        if v ~= player and v.Character and v.Character:FindFirstChild(getgenv().Silent.TargetPart) then
-            local pos, onScreen = Camera:WorldToScreenPoint(v.Character[getgenv().Silent.TargetPart].Position)
-            if onScreen then
-                local diff = (Vector2.new(pos.X, pos.Y) - Vector2.new(Mouse.X, Mouse.Y)).Magnitude
-                if diff < distance then
-                    distance = diff
-                    closest = v
+local function isVisible(part)
+    if not Aiming.VisibleCheck then
+        return true
+    end
+    local origin = Workspace.CurrentCamera.CFrame.Position
+    local direction = (part.Position - origin).Unit * (part.Position - origin).Magnitude
+    local ray = Ray.new(origin, direction)
+    local hit = Workspace:FindPartOnRayWithIgnoreList(ray, { lp.Character })
+    return hit == nil or hit:IsDescendantOf(lp.Character) or hit:IsDescendantOf(part.Parent)
+end
+
+local function getClosestPart(char)
+    for _, name in ipairs(Aiming.TargetPart) do
+        local p = char:FindFirstChild(name)
+        if p then
+            return p
+        end
+    end
+    return nil
+end
+
+local function canSelect(plr)
+    if plr == lp then
+        return false
+    end
+    for _, ignored in ipairs(Aiming.Ignored.Players or {}) do
+        if ignored == plr then
+            return false
+        end
+    end
+    if plr.Team and lp.Team and plr.Team == lp.Team then
+        return false
+    end
+    return true
+end
+
+function Aiming.GetClosestPlayerToCursor()
+    local closest, distance = nil, Aiming.FOV * 3
+    for _, plr in ipairs(Players:GetPlayers()) do
+        if canSelect(plr) and plr.Character then
+            local part = getClosestPart(plr.Character)
+            if part then
+                local pos, onScreen = Workspace.CurrentCamera:WorldToScreenPoint(part.Position)
+                if onScreen then
+                    local diff = (Vector2.new(pos.X, pos.Y) - Vector2.new(Mouse.X, Mouse.Y)).Magnitude
+                    if diff <= distance and isVisible(part) then
+                        closest = plr
+                        distance = diff
+                    end
                 end
             end
         end
     end
+    Aiming.Selected = closest
+    Aiming.SelectedPart = closest and getClosestPart(closest.Character) or nil
     return closest
 end
 
-local mt = getrawmetatable(game)
-if mt and setreadonly then
-    setreadonly(mt, false)
-    local oldIndex = mt.__index
-    mt.__index = function(self, key)
-        if getgenv().Silent.Enabled and self == Mouse and key == "Hit" then
-            local target = GetClosestForSilent()
-            if target and target.Character and target.Character:FindFirstChild(getgenv().Silent.TargetPart) then
-                local part = target.Character[getgenv().Silent.TargetPart]
-                return part.CFrame + (part.Velocity * getgenv().Silent.Prediction)
-            end
-        end
-        return oldIndex(self, key)
-    end
-    setreadonly(mt, true)
+function Aiming.Check()
+    return Aiming.Enabled and Aiming.Selected and Aiming.SelectedPart
 end
 
-local lp = Players.LocalPlayer
+RunService.Heartbeat:Connect(function()
+    if Aiming.Enabled then
+        Aiming.Update()
+        Aiming.GetClosestPlayerToCursor()
+    end
+end)
 
 local function normalizeName(name)
     return string.lower((name or ""):gsub("[^%w]", ""))
@@ -270,7 +309,7 @@ function StandController:voidLoop()
         self.voidConnection:Disconnect()
     end
     self.voidConnection = RunService.Heartbeat:Connect(function()
-        if not self.state.voided then
+        if not self.state.voided or self.activeMode ~= "void" then
             return
         end
         local char = getChar(lp)
@@ -306,13 +345,14 @@ function StandController:ensureDancePlaying()
 end
 
 function StandController:startFollow()
+    self:setMode("summon")
     self.state.voided = false
     self.state.followOwner = true
     if self.followConnection then
         self.followConnection:Disconnect()
     end
     self.followConnection = RunService.Heartbeat:Connect(function()
-        if not self.state.followOwner then
+        if self.activeMode ~= "summon" or not self.state.followOwner then
             return
         end
         local owner = Players:FindFirstChild(self.ownerName)
@@ -329,6 +369,7 @@ function StandController:startFollow()
 end
 
 function StandController:staySummon()
+    self:setMode("stay")
     self.state.voided = false
     self.state.followOwner = false
     if self.followConnection then
@@ -358,57 +399,38 @@ function StandController:interruptCombat()
     self.state.aura = false
     self.state.akill = false
     self.state.abortCombat = true
+    self.state.inCombat = false
     self:stopAimlock()
 end
 
-function StandController:forceStopAll()
+function StandController:stopAllModes()
     self:interruptCombat()
-    self.state.inCombat = false
     self.isBuyingAmmo = false
     self.isBuyingGuns = false
     self.isBuyingMask = false
     self.state.followOwner = false
+    self.state.stay = false
+    self.state.assistTargets = {}
+    self.activeMode = nil
+    Aiming.Enabled = false
+    if self.followConnection then
+        self.followConnection:Disconnect()
+        self.followConnection = nil
+    end
+end
+
+function StandController:setMode(mode)
+    self:stopAllModes()
+    self.activeMode = mode
 end
 
 function StandController:initializeAimlock()
     self.aimlockEnabled = true
-    self.aimlockActive = false
     self.aimlockTarget = nil
-    self.aimPart = env.AimPart or "HumanoidRootPart"
-    self.predictionVelocity = env.PredictionVelocity or 6
-    self.aimRadius = env.AimRadius or 30
-    self.teamCheck = env.TeamCheck or false
 end
 
 function StandController:getNearestTarget()
-    local candidates = {}
-    local diffs = {}
-    local cam = workspace.CurrentCamera
-    for _, plr in ipairs(Players:GetPlayers()) do
-        if plr ~= lp and plr.Character and plr.Character:FindFirstChild("Head") then
-            if not self.teamCheck or plr.Team ~= lp.Team then
-                local dist = (plr.Character.Head.Position - cam.CFrame.Position).Magnitude
-                local ray = Ray.new(cam.CFrame.Position, (lp:GetMouse().Hit.p - cam.CFrame.Position).unit * dist)
-                local _, hitPos = workspace:FindPartOnRay(ray, workspace)
-                local diff = math.floor((hitPos - plr.Character.Head.Position).Magnitude)
-                candidates[plr.Name .. tostring(dist)] = {plr = plr, diff = diff}
-                table.insert(diffs, diff)
-            end
-        end
-    end
-    if #diffs == 0 then
-        return nil
-    end
-    local best = math.min(unpack(diffs))
-    if best > self.aimRadius then
-        return nil
-    end
-    for _, v in pairs(candidates) do
-        if v.diff == best then
-            return v.plr
-        end
-    end
-    return nil
+    return Aiming.GetClosestPlayerToCursor()
 end
 
 function StandController:startAimlock(target)
@@ -418,32 +440,35 @@ function StandController:startAimlock(target)
     if not target or not target.Character then
         return
     end
-    self.aimlockActive = true
+    Aiming.Enabled = true
+    Aiming.Selected = target
+    Aiming.SelectedPart = target.Character and (target.Character:FindFirstChild("HumanoidRootPart") or target.Character:FindFirstChild("Head"))
     self.aimlockTarget = target
 end
 
 function StandController:stopAimlock()
-    self.aimlockActive = false
+    Aiming.Enabled = false
+    Aiming.Selected = nil
+    Aiming.SelectedPart = nil
     self.aimlockTarget = nil
 end
 
 function StandController:updateAimlock()
-    if not self.aimlockActive then
+    if not Aiming.Check() then
         return
     end
-    local target = self.aimlockTarget
     local char = getChar(lp)
     local root = getRoot(char)
-    if not target or not target.Character or not root then
+    if not root then
         self:stopAimlock()
         return
     end
-    local aimPart = target.Character:FindFirstChild(self.aimPart) or getRoot(target.Character) or target.Character:FindFirstChild("Head")
-    if not aimPart then
+    local part = Aiming.SelectedPart
+    if not part then
         self:stopAimlock()
         return
     end
-    local predicted = aimPart.Position + (aimPart.Velocity / self.predictionVelocity)
+    local predicted = part.Position + (part.Velocity * 0.18)
     root.CFrame = CFrame.lookAt(root.Position, predicted)
     local tool = char:FindFirstChildOfClass("Tool")
     if tool and tool:FindFirstChild("Handle") then
@@ -946,17 +971,12 @@ function StandController:parseChat(msg, speaker)
     table.remove(args, 1)
     local priority = { summon = true, v = true, mask = true }
     if priority[command] then
-        self:forceStopAll()
-        self.state.abortCombat = false
+        self:stopAllModes()
         self:executeCommand(command, args, speaker)
         return
     end
 
-    if command ~= "l" and command ~= "lk" and command ~= "akill" and command ~= "a" then
-        self:interruptCombat()
-        self.state.inCombat = false
-    end
-
+    self:stopAllModes()
     self:executeCommand(command, args, speaker)
 end
 
@@ -971,22 +991,22 @@ function StandController:initCommands()
     local handlers = {}
 
     handlers["summon"] = function(self)
-        self:interruptCombat()
+        self:setMode("summon")
         self:startFollow()
     end
 
     handlers["s"] = function(self, args)
-        self:interruptCombat()
         if args and args[1] then
             local target = resolvePlayer(args[1])
             if target then
+                self:setMode("stomp")
                 self:stomp(target)
             end
         end
     end
 
     handlers["v"] = function(self)
-        self:interruptCombat()
+        self:setMode("void")
         self.state.followOwner = false
         self.state.assistTargets = {}
         self:stopFollow()
@@ -1007,7 +1027,7 @@ function StandController:initCommands()
     end
 
     handlers["mask"] = function(self, args)
-        self:forceStopAll()
+        self:setMode("mask")
         if args[1] and args[1]:lower() == "on" then
             self.state.maskEnabled = true
             self:autoBuyMask()
@@ -1027,7 +1047,7 @@ function StandController:initCommands()
     handlers["d"] = function(self, args)
         local target = resolvePlayer(args[1])
         if target then
-            self.state.abortCombat = false
+            self:setMode("combat")
             self.state.lastTarget = target
             self:startAimlock(target)
             self:knock(target)
@@ -1037,7 +1057,7 @@ function StandController:initCommands()
     handlers["l"] = function(self, args)
         local target = resolvePlayer(args[1])
         if target then
-            self.state.abortCombat = false
+            self:setMode("loopkill")
             self.state.loopkillTarget = target
         end
     end
@@ -1045,25 +1065,21 @@ function StandController:initCommands()
     handlers["lk"] = function(self, args)
         local target = resolvePlayer(args[1])
         if target then
-            self.state.abortCombat = false
+            self:setMode("loopknock")
             self.state.loopknockTarget = target
         end
     end
 
     handlers["akill"] = function(self, args)
         local state = args[1] and args[1]:lower()
+        self:setMode(state == "on" and "akill" or nil)
         self.state.akill = state == "on"
-        if self.state.akill then
-            self.state.abortCombat = false
-        end
     end
 
     handlers["a"] = function(self, args)
         local state = args[1] and args[1]:lower()
+        self:setMode(state == "on" and "aura" or nil)
         self.state.aura = state == "on"
-        if self.state.aura then
-            self.state.abortCombat = false
-        end
     end
 
     handlers["awl"] = function(self, args)
@@ -1089,6 +1105,7 @@ function StandController:initCommands()
     handlers["b"] = function(self, args)
         local target = resolvePlayer(args[1])
         if target then
+            self:setMode("bring")
             self:bring(target)
         end
     end
@@ -1096,6 +1113,7 @@ function StandController:initCommands()
     handlers["sky"] = function(self, args)
         local target = resolvePlayer(args[1])
         if target then
+            self:setMode("sky")
             self:sky(target)
         end
     end
@@ -1103,6 +1121,7 @@ function StandController:initCommands()
     handlers["fling"] = function(self, args)
         local target = resolvePlayer(args[1])
         if target then
+            self:setMode("fling")
             self:fling(target)
         end
     end
@@ -1172,38 +1191,32 @@ function StandController:loopSystems()
     self.heartbeatConnection = RunService.Heartbeat:Connect(function()
         self:ensureDancePlaying()
         self:updateAimlock()
-        if self.state.abortCombat then
-            self.state.loopkillTarget = nil
-            self.state.loopknockTarget = nil
-            return
-        end
-        if self.state.loopkillTarget then
+        if self.activeMode == "loopkill" and self.state.loopkillTarget then
             if self:isKO(self.state.loopkillTarget) then
                 self:stomp(self.state.loopkillTarget)
                 self.state.loopkillTarget = nil
+                self:stopAimlock()
             else
                 self:kill(self.state.loopkillTarget)
             end
-        end
-        if self.state.loopknockTarget then
+        elseif self.activeMode == "loopknock" and self.state.loopknockTarget then
             if self:isKO(self.state.loopknockTarget) then
                 self.state.loopknockTarget = nil
+                self:stopAimlock()
             else
                 self:knock(self.state.loopknockTarget)
             end
-        end
-        if self.state.akill then
+        elseif self.activeMode == "akill" and self.state.akill then
             local target = self:getNearestTarget()
             if target then
+                self:startAimlock(target)
                 self:kill(target)
             end
-        end
-        if self.state.aura then
+        elseif self.activeMode == "aura" and self.state.aura then
             for _, plr in ipairs(Players:GetPlayers()) do
-                if plr ~= lp and not self.state.auraWhitelist[string.lower(plr.Name)] then
-                    if not self:isKO(plr) then
-                        self:kill(plr)
-                    end
+                if plr ~= lp and not self.state.auraWhitelist[string.lower(plr.Name)] and not self:isKO(plr) then
+                    self:startAimlock(plr)
+                    self:kill(plr)
                 end
             end
         end
@@ -1234,6 +1247,7 @@ end
 function StandController:start()
     self:announce("Waiting for commands from " .. self.ownerName)
     self.state.abortCombat = false
+    self:setMode("void")
     self:applyVoid()
     self:voidLoop()
     self:ensureDancePlaying()

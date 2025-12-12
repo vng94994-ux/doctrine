@@ -33,6 +33,27 @@ local maskShopPaths = {
     mask = workspace.Ignored.Shop["[Breathing Mask] - $66"],
 }
 
+local gunAliases = {
+    rifle = { "rifle", "ar" },
+    aug = { "aug" },
+    flint = { "flint", "flintlock" },
+    flintlock = { "flint", "flintlock" },
+    db = { "db", "doublebarrelsg", "doublebarrel" },
+    lmg = { "lmg" },
+}
+
+local function normalizeGunKey(name)
+    local key = normalizeName(name)
+    for canon, aliases in pairs(gunAliases) do
+        for _, alias in ipairs(aliases) do
+            if key == normalizeName(alias) then
+                return canon
+            end
+        end
+    end
+    return key
+end
+
 local function getChar(plr)
     return plr and plr.Character
 end
@@ -70,9 +91,16 @@ function StandController.new()
     local self = setmetatable({}, StandController)
     self.ownerName = tostring(env.Owner or "")
     self.allowedGuns = {}
+    self.gunAliasLookup = {}
+    self.allowedCanon = {}
     for _, g in ipairs(env.Guns or env.Gguns or {}) do
-        local lower = normalizeName(g)
-        self.allowedGuns[lower] = true
+        local canon = normalizeGunKey(g)
+        self.allowedCanon[canon] = true
+        for _, alias in ipairs(gunAliases[canon] or { canon }) do
+            local norm = normalizeName(alias)
+            self.allowedGuns[norm] = true
+            self.gunAliasLookup[norm] = canon
+        end
     end
 
     self.state = {
@@ -91,6 +119,8 @@ function StandController.new()
         fp = false,
         maskEnabled = false,
         lastTarget = nil,
+        abortCombat = false,
+        inCombat = false,
     }
 
     self.aimlockEnabled = true
@@ -250,6 +280,15 @@ function StandController:stopFollow()
     end
 end
 
+function StandController:interruptCombat()
+    self.state.loopkillTarget = nil
+    self.state.loopknockTarget = nil
+    self.state.aura = false
+    self.state.akill = false
+    self.state.abortCombat = true
+    self:stopAimlock()
+end
+
 function StandController:initializeAimlock()
     self.aimlockEnabled = true
     self.aimlockActive = false
@@ -348,8 +387,8 @@ function StandController:equipGunByName(name)
     if not name then
         return nil
     end
-    local lower = normalizeName(name)
-    if not self.allowedGuns[lower] then
+    local canon = normalizeGunKey(name)
+    if not self.allowedCanon[canon] then
         return nil
     end
     local char = getChar(lp)
@@ -357,14 +396,16 @@ function StandController:equipGunByName(name)
     local function find()
         if char then
             for _, t in ipairs(char:GetChildren()) do
-                if t:IsA("Tool") and self.allowedGuns[normalizeName(t.Name)] then
+                local canonForTool = self.gunAliasLookup[normalizeName(t.Name)]
+                if t:IsA("Tool") and canonForTool == canon then
                     return t
                 end
             end
         end
         if backpack then
             for _, t in ipairs(backpack:GetChildren()) do
-                if t:IsA("Tool") and self.allowedGuns[normalizeName(t.Name)] then
+                local canonForTool = self.gunAliasLookup[normalizeName(t.Name)]
+                if t:IsA("Tool") and canonForTool == canon then
                     return t
                 end
             end
@@ -375,15 +416,15 @@ function StandController:equipGunByName(name)
     if tool and char and tool.Parent ~= char then
         tool.Parent = char
     end
-    return tool
+    return tool, canon
 end
 
-function StandController:ensureAmmo(tool, gunName)
+function StandController:ensureAmmo(tool, gunKey)
     if not tool then
-        return tool, gunName
+        return tool, gunKey
     end
     local ammoValue
-    for _, name in ipairs({"Ammo", "AmmoCount", "Clip", "AmmoInGun"}) do
+    for _, name in ipairs({ "Ammo", "AmmoCount", "Clip", "AmmoInGun" }) do
         local v = tool:FindFirstChild(name)
         if v and v.Value ~= nil then
             ammoValue = v
@@ -391,14 +432,14 @@ function StandController:ensureAmmo(tool, gunName)
         end
     end
     if ammoValue and ammoValue.Value <= 0 then
-        self:autoBuyAmmo(gunName)
-        local refreshed = self:equipGunByName(gunName)
+        self:autoBuyAmmo(gunKey)
+        local refreshed, canon = self:equipGunByName(gunKey)
         if refreshed then
             tool = refreshed
-            gunName = normalizeName(refreshed.Name)
+            gunKey = canon or gunKey
         end
     end
-    return tool, gunName
+    return tool, gunKey
 end
 
 local function getDetectorAndHead(model)
@@ -408,6 +449,43 @@ local function getDetectorAndHead(model)
     local head = model:FindFirstChild("Head") or model:FindFirstChildWhichIsA("BasePart", true)
     local detector = model:FindFirstChildOfClass("ClickDetector") or (head and head:FindFirstChildOfClass("ClickDetector"))
     return detector, head
+end
+
+local function fireDetector(detector)
+    if detector and fireclickdetector then
+        fireclickdetector(detector)
+    end
+end
+
+function StandController:toolMatchesAllowed(tool)
+    if not tool or not tool:IsA("Tool") then
+        return nil
+    end
+    local canon = self.gunAliasLookup[normalizeName(tool.Name)]
+    if canon and self.allowedCanon[canon] then
+        return canon
+    end
+    return nil
+end
+
+function StandController:hasAnyAllowedGun()
+    local char = getChar(lp)
+    local backpack = lp:FindFirstChild("Backpack")
+    if char then
+        for _, t in ipairs(char:GetChildren()) do
+            if self:toolMatchesAllowed(t) then
+                return true
+            end
+        end
+    end
+    if backpack then
+        for _, t in ipairs(backpack:GetChildren()) do
+            if self:toolMatchesAllowed(t) then
+                return true
+            end
+        end
+    end
+    return false
 end
 
 function StandController:fireWeapon()
@@ -421,7 +499,7 @@ function StandController:fireWeapon()
     end
 end
 
-function StandController:equipAnyAllowed()
+function StandController:equipAnyAllowed(allowPurchase)
     local char = getChar(lp)
     if not char then
         return nil
@@ -429,33 +507,34 @@ function StandController:equipAnyAllowed()
     local backpack = lp:FindFirstChild("Backpack")
 
     local function isAllowed(tool)
-        local lower = tool and tool:IsA("Tool") and normalizeName(tool.Name)
-        return lower and self.allowedGuns[lower]
+        return self:toolMatchesAllowed(tool)
     end
 
     local function findAllowed()
         if char then
             for _, t in ipairs(char:GetChildren()) do
-                if isAllowed(t) then
-                    return t
+                local canon = isAllowed(t)
+                if canon then
+                    return t, canon
                 end
             end
         end
         if backpack then
             for _, t in ipairs(backpack:GetChildren()) do
-                if isAllowed(t) then
-                    return t
+                local canon = isAllowed(t)
+                if canon then
+                    return t, canon
                 end
             end
         end
-        return nil
+        return nil, nil
     end
 
-    local tool = findAllowed()
-    if not tool and not self.isBuyingGuns then
-        self:autoBuyGuns(true)
+    local tool, canon = findAllowed()
+    if not tool and allowPurchase and not self.isBuyingGuns then
+        self:autoBuyGuns()
         for _ = 1, 80 do
-            tool = findAllowed()
+            tool, canon = findAllowed()
             if tool then
                 break
             end
@@ -466,15 +545,18 @@ function StandController:equipAnyAllowed()
     if tool and tool.Parent ~= char then
         tool.Parent = char
     end
-    return tool
+    return tool, canon
 end
 
 function StandController:shootTarget(target)
     if not target then
         return
     end
-    local gun = self:equipAnyAllowed()
+    self.state.abortCombat = false
+    self.state.inCombat = true
+    local gun, gunKey = self:equipAnyAllowed(true)
     if not gun then
+        self.state.inCombat = false
         return
     end
 
@@ -483,18 +565,16 @@ function StandController:shootTarget(target)
 
     local char = getChar(lp)
     local root = getRoot(char)
-    local gunName = gun and normalizeName(gun.Name)
 
-    while root and target and target.Character and not self:isKO(target) do
+    while root and target and target.Character and not self:isKO(target) and not self.state.abortCombat do
         local targetRoot = getRoot(target.Character)
         if not targetRoot then
             break
         end
 
-        gun, gunName = self:ensureAmmo(gun, gunName)
+        gun, gunKey = self:ensureAmmo(gun, gunKey)
         if not gun then
-            gun = self:equipAnyAllowed()
-            gunName = gun and normalizeName(gun.Name)
+            gun, gunKey = self:equipAnyAllowed(true)
         end
         if not gun then
             break
@@ -512,6 +592,8 @@ function StandController:shootTarget(target)
     end
 
     self:stopAimlock()
+    self.state.inCombat = false
+    self.state.abortCombat = false
 end
 
 function StandController:knock(target)
@@ -610,13 +692,11 @@ function StandController:autoBuyMask()
         if detector and head then
             local original = root.CFrame
             root.CFrame = head.CFrame + Vector3.new(0, 3, 0)
-            for _ = 1, 8 do
-                pcall(function()
-                    fireclickdetector(detector)
-                end)
-                task.wait(0.15)
+            for _ = 1, 10 do
+                fireDetector(detector)
+                task.wait(0.12)
             end
-            for _ = 1, 40 do
+            for _ = 1, 50 do
                 owned = locateMask()
                 if owned then
                     break
@@ -637,10 +717,11 @@ function StandController:autoBuyMask()
         owned.Parent = char
     end
 
+    self:autoBuyGuns()
     self.isBuyingMask = false
 end
 
-function StandController:autoBuyGuns(force)
+function StandController:autoBuyGuns()
     if self.isBuyingGuns then
         return
     end
@@ -656,19 +737,22 @@ function StandController:autoBuyGuns(force)
 
     self.state.voided = false
     hum:UnequipTools()
+    task.wait(0.05)
     local backpack = lp:FindFirstChild("Backpack")
 
-    local function locateGun(lower)
+    local function locateGun(canon)
         if char then
             for _, t in ipairs(char:GetChildren()) do
-                if t:IsA("Tool") and normalizeName(t.Name) == lower then
+                local matchCanon = self:toolMatchesAllowed(t)
+                if matchCanon == canon then
                     return t
                 end
             end
         end
         if backpack then
             for _, t in ipairs(backpack:GetChildren()) do
-                if t:IsA("Tool") and normalizeName(t.Name) == lower then
+                local matchCanon = self:toolMatchesAllowed(t)
+                if matchCanon == canon then
                     return t
                 end
             end
@@ -678,29 +762,29 @@ function StandController:autoBuyGuns(force)
 
     local requested = env.Guns or env.Gguns or {}
     for _, gunName in ipairs(requested) do
-        local lower = normalizeName(gunName)
-        if self.allowedGuns[lower] then
-            local existing = locateGun(lower)
+        local canon = normalizeGunKey(gunName)
+        if self.allowedCanon[canon] then
+            local existing = locateGun(canon)
             if not existing then
-                local model = gunShopPaths[lower]
+                local model = gunShopPaths[canon]
                 local detector, head = getDetectorAndHead(model)
                 if detector and head then
                     local original = root.CFrame
                     root.CFrame = head.CFrame + Vector3.new(0, 3, 0)
                     for _ = 1, 10 do
-                        pcall(function()
-                            fireclickdetector(detector)
-                        end)
-                        task.wait(0.12)
+                        fireDetector(detector)
+                        task.wait(0.1)
                     end
-                    for _ = 1, 80 do
-                        existing = locateGun(lower)
+                    for _ = 1, 60 do
+                        existing = locateGun(canon)
                         if existing then
                             break
                         end
                         task.wait(0.1)
                     end
-                    root.CFrame = original
+                    if original then
+                        root.CFrame = original
+                    end
                 end
             end
             if existing and existing.Parent ~= char then
@@ -729,8 +813,13 @@ function StandController:autoBuyAmmo(gunName)
 
     self.state.voided = false
     hum:UnequipTools()
-    local lower = gunName and normalizeName(gunName)
+    local lower = gunName and normalizeGunKey(gunName)
     if not lower then
+        self.isBuyingAmmo = false
+        return
+    end
+
+    if not ammoShopPaths[lower] then
         self.isBuyingAmmo = false
         return
     end
@@ -741,17 +830,17 @@ function StandController:autoBuyAmmo(gunName)
         local original = root.CFrame
         root.CFrame = head.CFrame + Vector3.new(0, 3, 0)
         for _ = 1, 8 do
-            pcall(function()
-                fireclickdetector(detector)
-            end)
-            task.wait(0.12)
+            fireDetector(detector)
+            task.wait(0.1)
         end
         task.wait(0.2)
         local refreshed = self:equipGunByName(lower)
         if refreshed and refreshed.Parent ~= char then
             refreshed.Parent = char
         end
-        root.CFrame = original
+        if original then
+            root.CFrame = original
+        end
     end
 
     self.isBuyingAmmo = false
@@ -788,6 +877,7 @@ function StandController:initCommands()
     local handlers = {}
 
     handlers["summon"] = function(self)
+        self:interruptCombat()
         self:startFollow()
     end
 
@@ -799,18 +889,15 @@ function StandController:initCommands()
                 return
             end
         end
+        self:interruptCombat()
         self:staySummon()
     end
 
     handlers["v"] = function(self)
+        self:interruptCombat()
         self.state.followOwner = false
-        self.state.loopkillTarget = nil
-        self.state.loopknockTarget = nil
-        self.state.aura = false
-        self.state.akill = false
-        self:stopAimlock()
-        self:stopFollow()
         self.state.assistTargets = {}
+        self:stopFollow()
         self:applyVoid()
     end
 
@@ -847,6 +934,7 @@ function StandController:initCommands()
     handlers["d"] = function(self, args)
         local target = resolvePlayer(args[1])
         if target then
+            self.state.abortCombat = false
             self.state.lastTarget = target
             self:startAimlock(target)
             self:knock(target)
@@ -856,6 +944,7 @@ function StandController:initCommands()
     handlers["l"] = function(self, args)
         local target = resolvePlayer(args[1])
         if target then
+            self.state.abortCombat = false
             self.state.loopkillTarget = target
         end
     end
@@ -863,6 +952,7 @@ function StandController:initCommands()
     handlers["lk"] = function(self, args)
         local target = resolvePlayer(args[1])
         if target then
+            self.state.abortCombat = false
             self.state.loopknockTarget = target
         end
     end
@@ -870,11 +960,17 @@ function StandController:initCommands()
     handlers["akill"] = function(self, args)
         local state = args[1] and args[1]:lower()
         self.state.akill = state == "on"
+        if self.state.akill then
+            self.state.abortCombat = false
+        end
     end
 
     handlers["a"] = function(self, args)
         local state = args[1] and args[1]:lower()
         self.state.aura = state == "on"
+        if self.state.aura then
+            self.state.abortCombat = false
+        end
     end
 
     handlers["awl"] = function(self, args)
@@ -983,6 +1079,11 @@ function StandController:loopSystems()
     self.heartbeatConnection = RunService.Heartbeat:Connect(function()
         self:ensureDancePlaying()
         self:updateAimlock()
+        if self.state.abortCombat then
+            self.state.loopkillTarget = nil
+            self.state.loopknockTarget = nil
+            return
+        end
         if self.state.loopkillTarget then
             if self:isKO(self.state.loopkillTarget) then
                 self:stomp(self.state.loopkillTarget)
@@ -1039,6 +1140,7 @@ end
 
 function StandController:start()
     self:announce("Waiting for commands from " .. self.ownerName)
+    self.state.abortCombat = false
     self:applyVoid()
     self:voidLoop()
     self:ensureDancePlaying()

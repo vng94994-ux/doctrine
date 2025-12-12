@@ -105,6 +105,54 @@ local function normalizeName(name)
     return string.lower((name or ""):gsub("[^%w]", ""))
 end
 
+local patchedTools = setmetatable({}, { __mode = "k" })
+
+-- Applies rapid-fire modifications to a gun tool by reducing cooldown-like upvalues
+local function applyRapidFire(tool)
+    if not tool or not tool:IsA("Tool") then
+        return
+    end
+    if patchedTools[tool] or tool:GetAttribute("RapidPatched") then
+        return
+    end
+
+    local patched = false
+    pcall(function()
+        if getconnections and debug and debug.getupvalues and debug.setupvalue then
+            for _, conn in ipairs(getconnections(tool.Activated)) do
+                local fn = conn.Function
+                if fn then
+                    for idx, val in ipairs(debug.getupvalues(fn)) do
+                        if type(val) == "number" and val > 0.03 then
+                            local newVal = math.max(0.03, val * 0.35)
+                            debug.setupvalue(fn, idx, newVal)
+                            patched = true
+                        end
+                    end
+                end
+            end
+        end
+    end)
+
+    patchedTools[tool] = true
+    pcall(function()
+        tool:SetAttribute("RapidPatched", patched)
+    end)
+end
+
+-- Fires a weapon multiple times with minimal delay to simulate rapid fire
+local function rapidFireWeapon(tool, burstCount, delay)
+    if not tool or not tool:IsA("Tool") then
+        return
+    end
+    burstCount = burstCount or 3
+    delay = delay or 0.01
+    for _ = 1, burstCount do
+        tool:Activate()
+        task.wait(delay)
+    end
+end
+
 local gunShopPaths = {
     rifle = workspace.Ignored.Shop["[Rifle] - $1694"],
     aug = workspace.Ignored.Shop["[AUG] - $2131"],
@@ -186,6 +234,44 @@ local function getPartVelocity(part, lastPositions)
     end
     lastPositions[part] = { pos = part.Position, time = now }
     return vel
+end
+
+-- Ensures ammo by reloading or auto-buying when low/empty
+local function ensureAmmoAndReload(controller, tool, gunKey)
+    if not tool then
+        return tool, gunKey
+    end
+
+    local ammoValue
+    for _, name in ipairs({ "Ammo", "AmmoCount", "Clip", "AmmoInGun" }) do
+        local v = tool:FindFirstChild(name)
+        if v and typeof(v.Value) == "number" then
+            ammoValue = v
+            break
+        end
+    end
+
+    if ammoValue and ammoValue.Value <= 2 then
+        if controller then
+            controller:reloadTool(tool)
+        end
+        task.wait(0.08)
+
+        if ammoValue.Value <= 2 and controller then
+            controller:autoBuyAmmo(gunKey)
+            for _ = 1, 6 do
+                local refreshed, canon = controller:equipGunByName(gunKey)
+                if refreshed then
+                    tool = refreshed
+                    gunKey = canon or gunKey
+                    break
+                end
+                task.wait(0.1)
+            end
+        end
+    end
+
+    return tool, gunKey
 end
 
 local function resolvePlayer(query)
@@ -615,42 +701,7 @@ function StandController:equipGunByName(name)
 end
 
 function StandController:ensureAmmo(tool, gunKey)
-    if not tool then
-        return tool, gunKey
-    end
-
-    local ammoValue
-    for _, name in ipairs({ "Ammo", "AmmoCount", "Clip", "AmmoInGun" }) do
-        local v = tool:FindFirstChild(name)
-        if v and typeof(v.Value) == "number" then
-            ammoValue = v
-            break
-        end
-    end
-
-    -- Low ammo threshold (not just zero)
-    if ammoValue and ammoValue.Value <= 2 then
-        self:reloadTool(tool)
-        task.wait(0.15)
-
-        -- Still low? Force buy
-        if ammoValue.Value <= 2 then
-            self:autoBuyAmmo(gunKey)
-
-            -- Retry equip a few times (replication-safe)
-            for _ = 1, 6 do
-                local refreshed, canon = self:equipGunByName(gunKey)
-                if refreshed then
-                    tool = refreshed
-                    gunKey = canon or gunKey
-                    break
-                end
-                task.wait(0.12)
-            end
-        end
-    end
-
-    return tool, gunKey
+    return ensureAmmoAndReload(self, tool, gunKey)
 end
 
 function StandController:reloadTool(tool)
@@ -774,6 +825,9 @@ function StandController:equipAnyAllowed(allowPurchase)
     if tool and tool.Parent ~= char then
         tool.Parent = char
     end
+    if tool then
+        applyRapidFire(tool)
+    end
     return tool, canon
 end
 
@@ -810,8 +864,7 @@ function StandController:shootTarget(target)
         if gun.Parent ~= char then
             gun.Parent = char
         end
-        gun:Activate()
-        task.wait(0.03)
+        rapidFireWeapon(gun, 3, 0.01)
         RunService.Heartbeat:Wait()
         char = getChar(lp)
         root = getRoot(char)
@@ -837,7 +890,6 @@ function StandController:kill(target)
     self:startAimlock(target)
     self:shootTarget(target)
 
-    -- Wait for KO to replicate
     for _ = 1, 20 do
         if self:isKO(target) then
             self:stomp(target)
@@ -861,13 +913,10 @@ function StandController:stomp(target)
         return
     end
 
-    -- Position directly on top of the KO'd player
     root.CFrame = targetRoot.CFrame * CFrame.new(0, 2.8, 0)
 
-    -- Small wait for physics + replication
     task.wait(0.05)
 
-    -- Fire stomp multiple times to guarantee registration
     for i = 1, 6 do
         if self.mainEvent then
             self.mainEvent:FireServer("Stomp")

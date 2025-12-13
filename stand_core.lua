@@ -384,6 +384,8 @@ function StandController.new()
     self.danceAnimationId = "rbxassetid://15610015346"
     self.animationTrack = nil
 
+    self.antiSeatConns = nil
+
     self.isBuyingGuns = false
     self.isBuyingAmmo = false
     self.isBuyingMask = false
@@ -398,6 +400,17 @@ function StandController.new()
     self:initializeAimlock()
 
     return self
+end
+
+function StandController:clearAntiSeat()
+    if self.antiSeatConns then
+        for _, c in ipairs(self.antiSeatConns) do
+            pcall(function()
+                c:Disconnect()
+            end)
+        end
+    end
+    self.antiSeatConns = nil
 end
 
 function StandController:isLocalPlayable()
@@ -452,9 +465,9 @@ function StandController:applyVoid()
     local root = getRoot(char)
     if root then
         root.CFrame = CFrame.new(
-            math.random(-50000, 50000),
-            math.random(1000, 3000),
-            math.random(-50000, 50000)
+            math.random(-500000, 500000),
+            math.random(10000, 30000),
+            math.random(-500000, 500000)
         )
     end
     self.state.voided = true
@@ -502,6 +515,61 @@ function StandController:ensureDancePlaying()
     elseif not self.animationTrack.IsPlaying then
         self.animationTrack:Play()
     end
+end
+
+function StandController:setupAntiSeat()
+    local char = getChar(lp)
+    local hum = getHumanoid(char)
+    if not char or not hum then
+        return
+    end
+
+    self:clearAntiSeat()
+
+    local function forceStand()
+        if not hum or not hum.Parent or not self:isLocalPlayable() then
+            return
+        end
+        if hum.Sit then
+            hum.Sit = false
+        end
+        if hum:GetState() == Enum.HumanoidStateType.Seated then
+            hum:ChangeState(Enum.HumanoidStateType.Running)
+        end
+    end
+
+    pcall(function()
+        hum:SetStateEnabled(Enum.HumanoidStateType.Seated, false)
+    end)
+
+    local function noclip()
+        if not char or not char.Parent or not self:isLocalPlayable() then
+            return
+        end
+        for _, part in ipairs(char:GetDescendants()) do
+            if part:IsA("BasePart") then
+                part.CanCollide = false
+            end
+        end
+    end
+
+    forceStand()
+    noclip()
+
+    self.antiSeatConns = {
+        hum:GetPropertyChangedSignal("Sit"):Connect(function()
+            forceStand()
+        end),
+        hum.StateChanged:Connect(function(_, newState)
+            if newState == Enum.HumanoidStateType.Seated then
+                forceStand()
+            end
+        end),
+        RunService.Heartbeat:Connect(function()
+            forceStand()
+            noclip()
+        end),
+    }
 end
 
 function StandController:startFollow()
@@ -1572,12 +1640,14 @@ function StandController:start()
     self:applyVoid()
     self:voidLoop()
     self:ensureDancePlaying()
+    self:setupAntiSeat()
     self:connectChat()
     self:loopSystems()
     self:autoBuyGuns()
     table.insert(self.chatConnections, lp.CharacterAdded:Connect(function(char)
         char:WaitForChild("HumanoidRootPart", 5)
         self:ensureDancePlaying()
+        self:setupAntiSeat()
         self:autoBuyGuns()
         if self.state.maskEnabled then
             self:autoBuyMask()

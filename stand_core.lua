@@ -237,7 +237,7 @@ local function getPartVelocity(part, lastPositions)
 end
 
 -- Ensures ammo by reloading or auto-buying when low/empty
-local function ensureAmmoAndReload(controller, tool, gunKey)
+local function ensureAmmoAndReload(controller, tool, gunKey, combatStarted, minWindow)
     if not tool then
         return tool, gunKey
     end
@@ -251,24 +251,42 @@ local function ensureAmmoAndReload(controller, tool, gunKey)
         end
     end
 
-    if ammoValue and ammoValue.Value <= 2 then
-        if controller then
-            controller:reloadTool(tool)
-        end
-        task.wait(0.08)
+    if not ammoValue then
+        return tool, gunKey
+    end
 
-        if ammoValue.Value <= 2 and controller then
-            controller:autoBuyAmmo(gunKey)
-            for _ = 1, 6 do
-                local refreshed, canon = controller:equipGunByName(gunKey)
-                if refreshed then
-                    tool = refreshed
-                    gunKey = canon or gunKey
-                    break
-                end
-                task.wait(0.1)
+    if ammoValue.Value > 2 then
+        return tool, gunKey
+    end
+
+    if controller then
+        controller:reloadTool(tool)
+    end
+    task.wait(0.08)
+
+    if ammoValue.Value > 2 then
+        return tool, gunKey
+    end
+
+    local elapsed = combatStarted and (tick() - combatStarted) or math.huge
+    local threshold = minWindow or 0.75
+    if elapsed < threshold then
+        return tool, gunKey
+    end
+
+    if controller and not controller.state.restockingAmmo then
+        controller.state.restockingAmmo = true
+        controller:autoBuyAmmo(gunKey)
+        for _ = 1, 6 do
+            local refreshed, canon = controller:equipGunByName(gunKey)
+            if refreshed then
+                tool = refreshed
+                gunKey = canon or gunKey
+                break
             end
+            task.wait(0.1)
         end
+        controller.state.restockingAmmo = false
     end
 
     return tool, gunKey
@@ -330,6 +348,7 @@ function StandController.new()
         lastTarget = nil,
         abortCombat = false,
         inCombat = false,
+        restockingAmmo = false,
     }
 
     self.aimlockEnabled = true
@@ -731,8 +750,8 @@ function StandController:equipGunByName(name)
     return tool, canon
 end
 
-function StandController:ensureAmmo(tool, gunKey)
-    return ensureAmmoAndReload(self, tool, gunKey)
+function StandController:ensureAmmo(tool, gunKey, combatStarted, minWindow)
+    return ensureAmmoAndReload(self, tool, gunKey, combatStarted, minWindow)
 end
 
 function StandController:reloadTool(tool)
@@ -869,6 +888,7 @@ function StandController:shootTarget(target)
     if not self:isLocalPlayable() then
         return
     end
+    local combatStarted = tick()
     self.state.abortCombat = false
     self.state.inCombat = true
     local gun, gunKey = self:equipAnyAllowed(true)
@@ -882,14 +902,15 @@ function StandController:shootTarget(target)
 
     local char = getChar(lp)
     local root = getRoot(char)
+    local loopDeadline = combatStarted + 15
 
-    while root and target and target.Character and not self:isKO(target) and not self.state.abortCombat and self:isLocalPlayable() do
+    while root and target and target.Character and not self:isKO(target) and not self.state.abortCombat and self:isLocalPlayable() and tick() < loopDeadline do
         local targetRoot = getRoot(target.Character)
         if not targetRoot then
             break
         end
 
-        gun, gunKey = self:ensureAmmo(gun, gunKey)
+        gun, gunKey = self:ensureAmmo(gun, gunKey, combatStarted, 0.9)
         if not gun then
             break
         end

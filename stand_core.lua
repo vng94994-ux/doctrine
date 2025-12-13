@@ -381,6 +381,22 @@ function StandController.new()
     return self
 end
 
+function StandController:isLocalPlayable()
+    local char = getChar(lp)
+    if not char or char ~= lp.Character then
+        return false
+    end
+    local hum = getHumanoid(char)
+    if not hum or hum.Health <= 0 or hum:GetState() == Enum.HumanoidStateType.Dead then
+        return false
+    end
+    local root = getRoot(char)
+    if not root or root.Parent ~= char then
+        return false
+    end
+    return true
+end
+
 function StandController:announce(msg)
     print("[Stand] " .. tostring(msg))
 end
@@ -835,6 +851,9 @@ function StandController:shootTarget(target)
     if not target then
         return
     end
+    if not self:isLocalPlayable() then
+        return
+    end
     self.state.abortCombat = false
     self.state.inCombat = true
     local gun, gunKey = self:equipAnyAllowed(true)
@@ -849,7 +868,7 @@ function StandController:shootTarget(target)
     local char = getChar(lp)
     local root = getRoot(char)
 
-    while root and target and target.Character and not self:isKO(target) and not self.state.abortCombat do
+    while root and target and target.Character and not self:isKO(target) and not self.state.abortCombat and self:isLocalPlayable() do
         local targetRoot = getRoot(target.Character)
         if not targetRoot then
             break
@@ -1417,6 +1436,16 @@ function StandController:loopSystems()
         if self.silentActive and self.state.inCombat and (now - (self.timers.aimUpdate or 0)) > 0.05 then
             self:updateAimlock()
             self.timers.aimUpdate = now
+        end
+
+        if not self:isLocalPlayable() then
+            if self.state.inCombat or self.activeMode == "loopkill" or self.activeMode == "loopknock" or self.activeMode == "akill" or self.activeMode == "aura" or self.activeMode == "combat" then
+                self:interruptCombat()
+                if self.activeMode == "loopkill" or self.activeMode == "loopknock" or self.activeMode == "akill" or self.activeMode == "aura" or self.activeMode == "combat" then
+                    self.activeMode = nil
+                end
+            end
+            return
         end
 
         if not self.activeMode then

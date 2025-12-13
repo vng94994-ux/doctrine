@@ -105,6 +105,41 @@ local function normalizeName(name)
     return string.lower((name or ""):gsub("[^%w]", ""))
 end
 
+local ConnectionManager = {}
+ConnectionManager.__index = ConnectionManager
+
+function ConnectionManager.new()
+    return setmetatable({ connections = {}, tasks = {} }, ConnectionManager)
+end
+
+function ConnectionManager:connect(signal, fn)
+    local conn = signal:Connect(fn)
+    table.insert(self.connections, conn)
+    return conn
+end
+
+function ConnectionManager:addTask(thread)
+    table.insert(self.tasks, thread)
+    return thread
+end
+
+function ConnectionManager:cleanup()
+    for _, conn in ipairs(self.connections) do
+        pcall(function()
+            conn:Disconnect()
+        end)
+    end
+    self.connections = {}
+    for _, thread in ipairs(self.tasks) do
+        pcall(function()
+            if task.cancel then
+                task.cancel(thread)
+            end
+        end)
+    end
+    self.tasks = {}
+end
+
 local patchedTools = setmetatable({}, { __mode = "k" })
 local function markPatched(tool)
     if not tool then
@@ -132,7 +167,7 @@ local function applyRapidFire(tool)
                 local fn = conn.Function
                 if fn then
                     for idx, val in ipairs(debug.getupvalues(fn)) do
-                        if type(val) == "number" and val > 0.03 then
+                        if type(val) == "number" and val > 0.03 and val < 5 then
                             local newVal = math.max(0.03, val * 0.35)
                             debug.setupvalue(fn, idx, newVal)
                             patched = true
@@ -156,7 +191,9 @@ local function rapidFireWeapon(tool, burstCount, delay)
     burstCount = burstCount or 3
     delay = delay or 0.01
     for _ = 1, burstCount do
-        tool:Activate()
+        pcall(function()
+            tool:Activate()
+        end)
         task.wait(delay)
     end
 end
@@ -202,6 +239,35 @@ local function normalizeGunKey(name)
         end
     end
     return key
+end
+
+local STATE = {
+    IDLE = "IDLE",
+    COMBAT = "COMBAT",
+    RESTOCK = "RESTOCK",
+    DEAD = "DEAD",
+    RESPAWNING = "RESPAWNING",
+    VOID = "VOID",
+    FOLLOW = "FOLLOW",
+}
+
+local ConfigManager = {}
+ConfigManager.__index = ConfigManager
+
+function ConfigManager.new()
+    return setmetatable({ data = {} }, ConfigManager)
+end
+
+function ConfigManager:set(key, value)
+    self.data[key] = value
+end
+
+function ConfigManager:get(key, default)
+    local v = self.data[key]
+    if v == nil then
+        return default
+    end
+    return v
 end
 
 local function getChar(plr)
@@ -327,6 +393,7 @@ local controllerRef
 function StandController.new()
     local self = setmetatable({}, StandController)
     self.ownerName = tostring(env.Owner or "")
+    self.config = ConfigManager.new()
     self.allowedGuns = {}
     self.gunAliasLookup = {}
     self.allowedCanon = {}
@@ -386,11 +453,13 @@ function StandController.new()
         danceCheck = 0,
     }
 
-
     self.voidConnection = nil
     self.followConnection = nil
     self.heartbeatConnection = nil
     self.chatConnections = {}
+
+    self.connManager = ConnectionManager.new()
+    self.lifecycle = STATE.IDLE
 
     self.mainEvent = ReplicatedStorage:FindFirstChild("MainEvent")
 
@@ -432,7 +501,10 @@ function StandController:isLocalPlayable()
     if not char or char ~= lp.Character then
         return false
     end
-    if self.state.respawning then
+    if self.lifecycle == STATE.DEAD or self.lifecycle == STATE.RESPAWNING then
+        return false
+    end
+    if self.state.respawning or not self.state.alive then
         return false
     end
     local hum = getHumanoid(char)
@@ -460,9 +532,12 @@ end
 function StandController:onDeath()
     self.state.alive = false
     self.state.respawning = true
+    self:setLifecycle(STATE.DEAD)
     self:stopAllModes()
     self:stopAimlock()
+    self.connManager:cleanup()
     self:clearAntiSeat()
+    self:clearHumanoidConns()
     if self.animationTrack and self.animationTrack.IsPlaying then
         pcall(function()
             self.animationTrack:Stop()
@@ -489,7 +564,8 @@ function StandController:bindHumanoid(char)
 end
 
 function StandController:onCharacterAdded(char)
-    self.state.respawning = false
+    self:setLifecycle(STATE.RESPAWNING)
+    self.state.respawning = true
     self.state.alive = true
     self.state.abortCombat = false
     self.state.inCombat = false
@@ -502,6 +578,8 @@ function StandController:onCharacterAdded(char)
     if self.state.maskEnabled then
         self:autoBuyMask()
     end
+    self.state.respawning = false
+    self:setLifecycle(STATE.IDLE)
 end
 
 function StandController:announce(msg)
@@ -549,10 +627,7 @@ function StandController:applyVoid()
 end
 
 function StandController:voidLoop()
-    if self.voidConnection then
-        self.voidConnection:Disconnect()
-    end
-    self.voidConnection = RunService.Heartbeat:Connect(function()
+    self.voidConnection = self.connManager:connect(RunService.Heartbeat, function()
         if not self:isLocalPlayable() then
             self:stopAllModes()
             return
@@ -632,15 +707,15 @@ function StandController:setupAntiSeat()
     noclip()
 
     self.antiSeatConns = {
-        hum:GetPropertyChangedSignal("Sit"):Connect(function()
+        self.connManager:connect(hum:GetPropertyChangedSignal("Sit"), function()
             forceStand()
         end),
-        hum.StateChanged:Connect(function(_, newState)
+        self.connManager:connect(hum.StateChanged, function(_, newState)
             if newState == Enum.HumanoidStateType.Seated then
                 forceStand()
             end
         end),
-        RunService.Heartbeat:Connect(function()
+        self.connManager:connect(RunService.Heartbeat, function()
             forceStand()
             noclip()
         end),
@@ -651,10 +726,7 @@ function StandController:startFollow()
     self:setMode("summon")
     self.state.voided = false
     self.state.followOwner = true
-    if self.followConnection then
-        self.followConnection:Disconnect()
-    end
-    self.followConnection = RunService.Heartbeat:Connect(function()
+    self.followConnection = self.connManager:connect(RunService.Heartbeat, function()
         if not self:isLocalPlayable() then
             self:stopFollow()
             return
@@ -710,6 +782,10 @@ function StandController:interruptCombat()
     self:stopAimlock()
 end
 
+function StandController:setLifecycle(state)
+    self.lifecycle = state
+end
+
 function StandController:stopAllModes()
     self:interruptCombat()
     self.isBuyingAmmo = false
@@ -722,16 +798,37 @@ function StandController:stopAllModes()
     self.state.assistTargets = {}
     self.activeMode = nil
     self.timers.nearestTarget = nil
+    self.connManager:cleanup()
     Aiming.Enabled = false
     if self.followConnection then
         self.followConnection:Disconnect()
         self.followConnection = nil
+    end
+    self.voidConnection = nil
+    if self.lifecycle ~= STATE.DEAD and not self.state.respawning then
+        self:setLifecycle(STATE.IDLE)
+    end
+    if self:isLocalPlayable() then
+        self:setupAntiSeat()
     end
 end
 
 function StandController:setMode(mode)
     self:stopAllModes()
     self.activeMode = mode
+    if mode == "void" then
+        self:setLifecycle(STATE.VOID)
+    elseif mode == "summon" or mode == "stay" then
+        self:setLifecycle(STATE.FOLLOW)
+    elseif mode == "combat" or mode == "loopkill" or mode == "loopknock" or mode == "akill" or mode == "aura" then
+        self:setLifecycle(STATE.COMBAT)
+    elseif mode == "mask" then
+        self:setLifecycle(STATE.RESTOCK)
+    else
+        if self.lifecycle ~= STATE.DEAD and not self.state.respawning then
+            self:setLifecycle(STATE.IDLE)
+        end
+    end
 end
 
 function StandController:initializeAimlock()
@@ -1204,11 +1301,11 @@ function StandController:autoBuyMask()
     if now - (self.buyCooldown.mask or 0) < 2 then
         return
     end
-    self.isBuyingMask = true
-
     if not self:isLocalPlayable() then
         return
     end
+    self.isBuyingMask = true
+    self:setLifecycle(STATE.RESTOCK)
 
     local char = getChar(lp)
     local root = getRoot(char)
@@ -1276,6 +1373,9 @@ function StandController:autoBuyMask()
     self:autoBuyGuns()
     self.isBuyingMask = false
     self.buyCooldown.mask = tick()
+    if not self.state.respawning then
+        self:setLifecycle(STATE.IDLE)
+    end
 end
 
 function StandController:autoBuyGuns()
@@ -1294,10 +1394,7 @@ function StandController:autoBuyGuns()
     end
     self.isBuyingGuns = true
     self.buyCooldown.guns = now
-
-    if not self:isLocalPlayable() then
-        return
-    end
+    self:setLifecycle(STATE.RESTOCK)
 
     local char = getChar(lp)
     local root = getRoot(char)
@@ -1371,6 +1468,9 @@ function StandController:autoBuyGuns()
 
     self.isBuyingGuns = false
     self:ensureDancePlaying()
+    if not self.state.respawning then
+        self:setLifecycle(STATE.IDLE)
+    end
 end
 
 function StandController:autoBuyAmmo(gunName)
@@ -1381,11 +1481,11 @@ function StandController:autoBuyAmmo(gunName)
     if now - (self.buyCooldown.ammo or 0) < 1.0 then
         return
     end
-    self.isBuyingAmmo = true
-
     if not self:isLocalPlayable() then
         return
     end
+    self.isBuyingAmmo = true
+    self:setLifecycle(STATE.RESTOCK)
 
     local char = getChar(lp)
     local root = getRoot(char)
@@ -1404,10 +1504,6 @@ function StandController:autoBuyAmmo(gunName)
     end
 
     if not ammoShopPaths[lower] then
-        self.isBuyingAmmo = false
-        return
-    end
-    if not self:isLocalPlayable() then
         self.isBuyingAmmo = false
         return
     end
@@ -1438,6 +1534,9 @@ function StandController:autoBuyAmmo(gunName)
     self.isBuyingAmmo = false
     self.buyCooldown.ammo = tick()
     self:ensureDancePlaying()
+    if not self.state.respawning then
+        self:setLifecycle(STATE.IDLE)
+    end
 end
 
 function StandController:parseChat(msg, speaker)
@@ -1776,6 +1875,10 @@ function StandController:start()
     self:setupAntiSeat()
     if lp.Character then
         self:onCharacterAdded(lp.Character)
+    end
+    self:autoBuyGuns()
+    if self.state.maskEnabled then
+        self:autoBuyMask()
     end
     self:connectChat()
     self:loopSystems()

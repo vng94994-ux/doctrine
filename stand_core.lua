@@ -426,6 +426,9 @@ function StandController:removeWhitelist(user)
 end
 
 function StandController:applyVoid()
+    if not self:isLocalPlayable() then
+        return
+    end
     local char = getChar(lp)
     local root = getRoot(char)
     if root then
@@ -443,6 +446,10 @@ function StandController:voidLoop()
         self.voidConnection:Disconnect()
     end
     self.voidConnection = RunService.Heartbeat:Connect(function()
+        if not self:isLocalPlayable() then
+            self:stopAllModes()
+            return
+        end
         if not self.state.voided or self.activeMode ~= "void" then
             return
         end
@@ -486,6 +493,10 @@ function StandController:startFollow()
         self.followConnection:Disconnect()
     end
     self.followConnection = RunService.Heartbeat:Connect(function()
+        if not self:isLocalPlayable() then
+            self:stopFollow()
+            return
+        end
         if self.activeMode ~= "summon" or not self.state.followOwner then
             return
         end
@@ -598,6 +609,10 @@ function StandController:stopAimlock()
 end
 
 function StandController:updateAimlock()
+    if not self:isLocalPlayable() then
+        self:stopAimlock()
+        return
+    end
     if not self.silentActive or not self.state.inCombat or not Aiming.Check() then
         return
     end
@@ -976,6 +991,10 @@ function StandController:autoBuyMask()
     end
     self.isBuyingMask = true
 
+    if not self:isLocalPlayable() then
+        return
+    end
+
     local char = getChar(lp)
     local root = getRoot(char)
     local hum = getHumanoid(char)
@@ -1057,6 +1076,10 @@ function StandController:autoBuyGuns()
     end
     self.isBuyingGuns = true
     self.buyCooldown.guns = now
+
+    if not self:isLocalPlayable() then
+        return
+    end
 
     local char = getChar(lp)
     local root = getRoot(char)
@@ -1141,6 +1164,10 @@ function StandController:autoBuyAmmo(gunName)
         return
     end
     self.isBuyingAmmo = true
+
+    if not self:isLocalPlayable() then
+        return
+    end
 
     local char = getChar(lp)
     local root = getRoot(char)
@@ -1428,6 +1455,10 @@ function StandController:loopSystems()
     end
     self.heartbeatConnection = RunService.Heartbeat:Connect(function()
         local now = tick()
+        if not self:isLocalPlayable() then
+            self:stopAllModes()
+            return
+        end
         if now - (self.timers.danceCheck or 0) > 0.4 then
             self:ensureDancePlaying()
             self.timers.danceCheck = now

@@ -106,6 +106,15 @@ local function normalizeName(name)
 end
 
 local patchedTools = setmetatable({}, { __mode = "k" })
+local function markPatched(tool)
+    if not tool then
+        return
+    end
+    patchedTools[tool] = true
+    pcall(function()
+        tool:SetAttribute("RapidPatched", true)
+    end)
+end
 
 -- Applies rapid-fire modifications to a gun tool by reducing cooldown-like upvalues
 local function applyRapidFire(tool)
@@ -134,10 +143,9 @@ local function applyRapidFire(tool)
         end
     end)
 
-    patchedTools[tool] = true
-    pcall(function()
-        tool:SetAttribute("RapidPatched", patched)
-    end)
+    if patched then
+        markPatched(tool)
+    end
 end
 
 -- Fires a weapon multiple times with minimal delay to simulate rapid fire
@@ -274,8 +282,9 @@ local function ensureAmmoAndReload(controller, tool, gunKey, combatStarted, minW
         return tool, gunKey
     end
 
-    if controller and not controller.state.restockingAmmo then
+    if controller and not controller.state.restockingAmmo and not controller.state.restocking then
         controller.state.restockingAmmo = true
+        controller.state.restocking = true
         controller:autoBuyAmmo(gunKey)
         for _ = 1, 6 do
             local refreshed, canon = controller:equipGunByName(gunKey)
@@ -284,8 +293,9 @@ local function ensureAmmoAndReload(controller, tool, gunKey, combatStarted, minW
                 gunKey = canon or gunKey
                 break
             end
-            task.wait(0.1)
+            task.wait(0.08)
         end
+        controller.state.restocking = false
         controller.state.restockingAmmo = false
     end
 
@@ -349,6 +359,9 @@ function StandController.new()
         abortCombat = false,
         inCombat = false,
         restockingAmmo = false,
+        restocking = false,
+        alive = true,
+        respawning = false,
     }
 
     self.aimlockEnabled = true
@@ -385,6 +398,7 @@ function StandController.new()
     self.animationTrack = nil
 
     self.antiSeatConns = nil
+    self.humanoidConns = nil
 
     self.isBuyingGuns = false
     self.isBuyingAmmo = false
@@ -418,6 +432,9 @@ function StandController:isLocalPlayable()
     if not char or char ~= lp.Character then
         return false
     end
+    if self.state.respawning then
+        return false
+    end
     local hum = getHumanoid(char)
     if not hum or hum.Health <= 0 or hum:GetState() == Enum.HumanoidStateType.Dead then
         return false
@@ -427,6 +444,64 @@ function StandController:isLocalPlayable()
         return false
     end
     return true
+end
+
+function StandController:clearHumanoidConns()
+    if self.humanoidConns then
+        for _, c in ipairs(self.humanoidConns) do
+            pcall(function()
+                c:Disconnect()
+            end)
+        end
+    end
+    self.humanoidConns = nil
+end
+
+function StandController:onDeath()
+    self.state.alive = false
+    self.state.respawning = true
+    self:stopAllModes()
+    self:stopAimlock()
+    self:clearAntiSeat()
+    if self.animationTrack and self.animationTrack.IsPlaying then
+        pcall(function()
+            self.animationTrack:Stop()
+        end)
+    end
+end
+
+function StandController:bindHumanoid(char)
+    self:clearHumanoidConns()
+    local hum = getHumanoid(char)
+    if not hum then
+        return
+    end
+    self.humanoidConns = {
+        hum.Died:Connect(function()
+            self:onDeath()
+        end),
+        hum:GetPropertyChangedSignal("Health"):Connect(function()
+            if hum.Health <= 0 then
+                self:onDeath()
+            end
+        end),
+    }
+end
+
+function StandController:onCharacterAdded(char)
+    self.state.respawning = false
+    self.state.alive = true
+    self.state.abortCombat = false
+    self.state.inCombat = false
+    self.state.restocking = false
+    char:WaitForChild("HumanoidRootPart", 5)
+    self:ensureDancePlaying()
+    self:setupAntiSeat()
+    self:bindHumanoid(char)
+    self:autoBuyGuns()
+    if self.state.maskEnabled then
+        self:autoBuyMask()
+    end
 end
 
 function StandController:announce(msg)
@@ -640,6 +715,8 @@ function StandController:stopAllModes()
     self.isBuyingAmmo = false
     self.isBuyingGuns = false
     self.isBuyingMask = false
+    self.state.restocking = false
+    self.state.restockingAmmo = false
     self.state.followOwner = false
     self.state.stay = false
     self.state.assistTargets = {}
@@ -894,6 +971,21 @@ function StandController:fireWeapon()
     end
 end
 
+function StandController:getEquippedAllowedTools()
+    local char = getChar(lp)
+    if not char then
+        return {}
+    end
+    local tools = {}
+    for _, t in ipairs(char:GetChildren()) do
+        local canon = self:toolMatchesAllowed(t)
+        if canon then
+            table.insert(tools, { tool = t, canon = canon })
+        end
+    end
+    return tools
+end
+
 function StandController:equipAnyAllowed(allowPurchase)
     local char = getChar(lp)
     if not char then
@@ -959,10 +1051,22 @@ function StandController:shootTarget(target)
     local combatStarted = tick()
     self.state.abortCombat = false
     self.state.inCombat = true
-    local gun, gunKey = self:equipAnyAllowed(true)
-    if not gun then
+    self.state.restocking = false
+
+    local tools = self:getEquippedAllowedTools()
+    if #tools == 0 then
+        local gun, canon = self:equipAnyAllowed(true)
+        if gun then
+            tools = { { tool = gun, canon = canon } }
+        end
+    end
+    if #tools == 0 then
         self.state.inCombat = false
         return
+    end
+
+    for _, entry in ipairs(tools) do
+        applyRapidFire(entry.tool)
     end
 
     self.state.voided = false
@@ -970,7 +1074,7 @@ function StandController:shootTarget(target)
 
     local char = getChar(lp)
     local root = getRoot(char)
-    local loopDeadline = combatStarted + 15
+    local loopDeadline = combatStarted + 18
 
     while root and target and target.Character and not self:isKO(target) and not self.state.abortCombat and self:isLocalPlayable() and tick() < loopDeadline do
         local targetRoot = getRoot(target.Character)
@@ -978,16 +1082,37 @@ function StandController:shootTarget(target)
             break
         end
 
-        gun, gunKey = self:ensureAmmo(gun, gunKey, combatStarted, 0.9)
-        if not gun then
+        if #tools == 0 then
+            local gun, canon = self:equipAnyAllowed(false)
+            if gun then
+                tools = { { tool = gun, canon = canon } }
+                applyRapidFire(gun)
+            end
+        end
+
+        for idx = #tools, 1, -1 do
+            local entry = tools[idx]
+            if not entry.tool or entry.tool.Parent ~= char then
+                table.remove(tools, idx)
+            end
+        end
+
+        for _, entry in ipairs(tools) do
+            entry.tool, entry.canon = self:ensureAmmo(entry.tool, entry.canon, combatStarted, 0.9)
+        end
+
+        if #tools == 0 then
             break
         end
 
         root.CFrame = targetRoot.CFrame * CFrame.new(0, 0, -2)
-        if gun.Parent ~= char then
-            gun.Parent = char
+        for _, entry in ipairs(tools) do
+            if entry.tool.Parent ~= char then
+                entry.tool.Parent = char
+            end
+            applyRapidFire(entry.tool)
+            rapidFireWeapon(entry.tool, 3, 0.008)
         end
-        rapidFireWeapon(gun, 3, 0.01)
         RunService.Heartbeat:Wait()
         char = getChar(lp)
         root = getRoot(char)
@@ -997,6 +1122,7 @@ function StandController:shootTarget(target)
     self:stopAimlock()
     self.state.inCombat = false
     self.state.abortCombat = false
+    self.state.restocking = false
 end
 
 function StandController:knock(target)
@@ -1163,6 +1289,9 @@ function StandController:autoBuyGuns()
     if self.state.inCombat and self:hasAnyAllowedGun() then
         return
     end
+    if not self:isLocalPlayable() then
+        return
+    end
     self.isBuyingGuns = true
     self.buyCooldown.guns = now
 
@@ -1275,6 +1404,10 @@ function StandController:autoBuyAmmo(gunName)
     end
 
     if not ammoShopPaths[lower] then
+        self.isBuyingAmmo = false
+        return
+    end
+    if not self:isLocalPlayable() then
         self.isBuyingAmmo = false
         return
     end
@@ -1641,17 +1774,13 @@ function StandController:start()
     self:voidLoop()
     self:ensureDancePlaying()
     self:setupAntiSeat()
+    if lp.Character then
+        self:onCharacterAdded(lp.Character)
+    end
     self:connectChat()
     self:loopSystems()
-    self:autoBuyGuns()
     table.insert(self.chatConnections, lp.CharacterAdded:Connect(function(char)
-        char:WaitForChild("HumanoidRootPart", 5)
-        self:ensureDancePlaying()
-        self:setupAntiSeat()
-        self:autoBuyGuns()
-        if self.state.maskEnabled then
-            self:autoBuyMask()
-        end
+        self:onCharacterAdded(char)
     end))
 end
 
